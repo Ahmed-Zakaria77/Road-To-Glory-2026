@@ -1,6 +1,6 @@
 const STORAGE_KEY = "wc2026_predictor_2026_v2";
 const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
-const SHARED_STATE_ENDPOINT = "storage.php";
+const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_PASSWORD = "ziko97";
 
@@ -32,6 +32,7 @@ const ROUND_FILTER_OPTIONS = [
 const scheduleSource = normalizeWorldCupData(
   typeof worldCupData !== "undefined" ? worldCupData : (globalThis.worldCupData || {})
 );
+const remoteStorageConfig = normalizeRemoteStorageConfig(globalThis.WC2026_CONFIG?.remoteStorage || {});
 
 const dom = {
   startPredictionsBtn: document.getElementById("startPredictionsBtn"),
@@ -69,6 +70,9 @@ const uiState = {
 const persistence = {
   backendAvailable: false,
   revision: 0,
+  endpoint: "",
+  etag: "",
+  backendKind: "",
   status: "pending",
   message: "Connecting to shared storage..."
 };
@@ -234,72 +238,73 @@ async function hydrateState(options = {}) {
 }
 
 async function fetchSharedState({ silent = false } = {}) {
-  try {
-    const response = await fetch(`${SHARED_STATE_ENDPOINT}?t=${Date.now()}`, {
-      cache: "no-store"
-    });
+  let lastError = null;
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+  for (const backend of getSharedStateEndpointCandidates()) {
+    try {
+      const result = await readFromSharedBackend(backend);
+      if (!result.payload.ok) {
+        throw new Error(result.payload.message || "Shared storage response was not successful.");
+      }
 
-    const payload = await response.json();
-    if (!payload.ok) {
-      throw new Error(payload.message || "Shared storage response was not successful.");
+      persistence.endpoint = backend.id;
+      persistence.backendKind = backend.kind;
+      persistence.etag = result.etag || "";
+      persistence.backendAvailable = true;
+      setPersistenceStatus("connected", getConnectedStorageMessage(backend));
+      return result.payload;
+    } catch (error) {
+      lastError = error;
     }
-
-    persistence.backendAvailable = true;
-    setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
-    return payload;
-  } catch (error) {
-    persistence.backendAvailable = false;
-    setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
-    if (!silent) {
-      console.warn("Shared storage is unavailable.", error);
-      showToast(getSharedStorageUnavailableMessage(), "error");
-    }
-    return null;
   }
+
+  persistence.backendAvailable = false;
+  setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
+  if (!silent) {
+    console.warn("Shared storage is unavailable.", lastError);
+    showToast(getSharedStorageUnavailableMessage(), "error");
+  }
+  return null;
 }
 
 async function commitSharedState(nextState, baseRevision, { silent = false } = {}) {
-  try {
-    const response = await fetch(SHARED_STATE_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        action: "replaceState",
-        baseRevision,
-        state: nextState
-      })
-    });
+  let lastError = null;
 
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) {
-      if (payload?.conflict) {
-        persistence.backendAvailable = true;
-        setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
-      } else if (!response.ok) {
-        persistence.backendAvailable = false;
-        setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
+  for (const backend of getSharedStateEndpointCandidates()) {
+    try {
+      const payload = await writeToSharedBackend(backend, nextState, baseRevision);
+      if (!payload.ok || payload.conflict) {
+        if (payload?.conflict) {
+          persistence.endpoint = backend.id;
+          persistence.backendKind = backend.kind;
+          persistence.etag = payload.etag || persistence.etag;
+          persistence.backendAvailable = true;
+          setPersistenceStatus("connected", getConnectedStorageMessage(backend));
+        } else if (!payload.ok) {
+          lastError = new Error(payload.message || "Shared storage write failed.");
+          continue;
+        }
+        return payload;
       }
-      return payload;
-    }
 
-    persistence.backendAvailable = true;
-    setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
-    return payload;
-  } catch (error) {
-    persistence.backendAvailable = false;
-    setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
-    if (!silent) {
-      console.warn("Could not save to shared storage.", error);
-      showToast(getSharedStorageUnavailableMessage(), "error");
+      persistence.endpoint = backend.id;
+      persistence.backendKind = backend.kind;
+      persistence.etag = payload.etag || "";
+      persistence.backendAvailable = true;
+      setPersistenceStatus("connected", getConnectedStorageMessage(backend));
+      return payload;
+    } catch (error) {
+      lastError = error;
     }
-    return null;
   }
+
+  persistence.backendAvailable = false;
+  setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
+  if (!silent) {
+    console.warn("Could not save to shared storage.", lastError);
+    showToast(getSharedStorageUnavailableMessage(), "error");
+  }
+  return null;
 }
 
 async function applySharedMutation(mutator, options = {}) {
@@ -951,15 +956,222 @@ function setPersistenceStatus(status, message) {
 }
 
 function getSharedStorageUnavailableMessage() {
+  if (remoteStorageConfig.provider === "firebase-rest" && !remoteStorageConfig.firebaseDatabaseUrl) {
+    return "Shared storage is not configured yet. Add your Firebase Realtime Database URL in app-config.js.";
+  }
+
+  if (remoteStorageConfig.provider === "firebase-rest") {
+    return "Shared storage offline. Check your Firebase database URL, database rules, and optional auth token.";
+  }
+
+  if (window.location.hostname.endsWith("github.io")) {
+    return "Shared storage is not configured for GitHub Pages yet. Add Firebase settings in app-config.js.";
+  }
+
   if (window.location.protocol === "file:") {
-    return "Shared storage offline. Open the app through a PHP server URL, not file://.";
+    return "Shared storage offline. Open the app through server.py or PHP, not file://.";
   }
 
   if (window.location.port === "5500" || window.location.port === "5501") {
-    return "Shared storage offline. Live Server usually does not run PHP. Open the app through Apache/PHP.";
+    return "Shared storage offline. Live Server does not run the project backend. Use server.py or Apache/PHP.";
   }
 
-  return "Shared storage offline. Make sure storage.php is running on the same site through PHP.";
+  return "Shared storage offline. Start the project through `python3 server.py` on its own URL, or make sure storage.php is running.";
+}
+
+function getSharedStateEndpointCandidates() {
+  const candidates = [];
+
+  if (remoteStorageConfig.provider === "firebase-rest" && remoteStorageConfig.firebaseDatabaseUrl) {
+    candidates.push({
+      id: `firebase-rest:${remoteStorageConfig.firebaseDatabaseUrl}`,
+      kind: "firebase-rest",
+      databaseUrl: remoteStorageConfig.firebaseDatabaseUrl,
+      auth: remoteStorageConfig.firebaseAuth,
+      statePath: remoteStorageConfig.firebaseStatePath
+    });
+  }
+
+  SHARED_STATE_ENDPOINTS.forEach((endpoint) => {
+    candidates.push({
+      id: `http-json:${endpoint}`,
+      kind: "http-json",
+      endpoint
+    });
+  });
+
+  if (!persistence.endpoint) {
+    return candidates;
+  }
+
+  const preferred = candidates.find((candidate) => candidate.id === persistence.endpoint);
+  if (!preferred) {
+    return candidates;
+  }
+
+  return [preferred].concat(candidates.filter((candidate) => candidate.id !== persistence.endpoint));
+}
+
+async function readFromSharedBackend(backend) {
+  if (backend.kind === "firebase-rest") {
+    const response = await fetch(buildFirebaseStateUrl(backend), {
+      cache: "no-store",
+      headers: {
+        "X-Firebase-ETag": "true"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    return {
+      payload: payload === null ? buildDefaultEnvelope() : payload,
+      etag: extractEtag(response)
+    };
+  }
+
+  const response = await fetch(buildSharedStateGetUrl(backend.endpoint), {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  return {
+    payload: await response.json(),
+    etag: ""
+  };
+}
+
+async function writeToSharedBackend(backend, nextState, baseRevision) {
+  if (backend.kind === "firebase-rest") {
+    return writeToFirebaseBackend(backend, nextState, baseRevision);
+  }
+
+  const response = await fetch(backend.endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      action: "replaceState",
+      baseRevision,
+      state: nextState
+    })
+  });
+
+  return response.json();
+}
+
+async function writeToFirebaseBackend(backend, nextState, baseRevision) {
+  let etag = persistence.endpoint === backend.id ? persistence.etag : "";
+
+  if (!etag) {
+    const current = await readFromSharedBackend(backend);
+    etag = current.etag || "";
+  }
+
+  const nextEnvelope = {
+    ok: true,
+    revision: baseRevision + 1,
+    updatedAt: new Date().toISOString(),
+    state: nextState
+  };
+
+  const headers = {
+    "Content-Type": "application/json"
+  };
+
+  if (etag) {
+    headers["if-match"] = etag;
+  }
+
+  const response = await fetch(buildFirebaseStateUrl(backend), {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(nextEnvelope)
+  });
+
+  if (response.status === 412) {
+    const payload = await response.json();
+    return {
+      ok: false,
+      conflict: true,
+      revision: Number(payload?.revision || 0),
+      state: payload?.state || createDefaultState(),
+      etag: extractEtag(response),
+      message: "Shared data changed before this save completed."
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      message: `HTTP ${response.status}`
+    };
+  }
+
+  const payload = await response.json();
+  return {
+    ...payload,
+    etag: extractEtag(response)
+  };
+}
+
+function buildSharedStateGetUrl(endpoint) {
+  const url = new URL(endpoint, window.location.href);
+  url.searchParams.set("t", String(Date.now()));
+  return url.toString();
+}
+
+function buildFirebaseStateUrl(backend) {
+  const cleanDatabaseUrl = String(backend.databaseUrl || "").replace(/\/+$/, "");
+  const cleanPath = String(backend.statePath || "wc2026/shared-state").replace(/^\/+|\/+$/g, "");
+  const url = new URL(`${cleanDatabaseUrl}/${cleanPath}.json`);
+  if (backend.auth) {
+    url.searchParams.set("auth", backend.auth);
+  }
+  return url.toString();
+}
+
+function extractEtag(response) {
+  return response.headers.get("etag") || response.headers.get("ETag") || "";
+}
+
+function buildDefaultEnvelope() {
+  return {
+    ok: true,
+    revision: 0,
+    updatedAt: null,
+    state: null
+  };
+}
+
+function getConnectedStorageMessage(backend) {
+  if (backend.kind === "firebase-rest") {
+    return "Firebase shared storage connected. All devices on GitHub Pages see the same players and admin updates.";
+  }
+
+  return "Shared storage connected. All devices see the same players and admin updates.";
+}
+
+function normalizeRemoteStorageConfig(config) {
+  const provider = String(config?.provider || "").trim().toLowerCase();
+  const firebaseDatabaseUrl = String(config?.firebaseDatabaseUrl || "").trim().replace(/\/+$/, "");
+  const firebaseAuth = String(config?.firebaseAuth || "").trim();
+  const firebaseStatePath = String(config?.firebaseStatePath || "wc2026/shared-state")
+    .trim()
+    .replace(/^\/+|\/+$/g, "");
+
+  return {
+    provider,
+    firebaseDatabaseUrl,
+    firebaseAuth,
+    firebaseStatePath
+  };
 }
 
 function renderMatches() {
