@@ -1,4 +1,7 @@
 const STORAGE_KEY = "wc2026_predictor_2026_v2";
+const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
+const SHARED_STATE_ENDPOINT = "storage.php";
+const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_PASSWORD = "ziko97";
 
 const MATCH_SCORING = {
@@ -58,21 +61,30 @@ const dom = {
 
 const uiState = {
   leaderboardFlashUntil: 0,
-  timerId: null
+  timerId: null,
+  syncTimerId: null
 };
 
-let state = loadState();
+const persistence = {
+  backendAvailable: false,
+  revision: 0
+};
+
+let state = createDefaultState();
+let sessionState = loadSessionState();
 
 init();
 
-function init() {
+async function init() {
   buildParticles();
   renderHeroAtmosphere();
+  bindEvents();
+  await hydrateState();
   recalculatePoints();
   populateMatchFilters();
-  bindEvents();
   renderAll();
   startCountdownLoop();
+  startSharedSyncLoop();
 }
 
 function createDefaultState() {
@@ -82,48 +94,80 @@ function createDefaultState() {
     matches: scheduleSource.matches.map(cloneObject),
     matchPredictions: [],
     groupPredictions: [],
-    activePlayerId: "",
-    adminUnlocked: false,
     scheduleVersion: scheduleSource.version
   };
 }
 
-function loadState() {
+function loadLocalSharedState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       return createDefaultState();
     }
 
-    const parsed = JSON.parse(raw);
-    const baseState = {
-      players: Array.isArray(parsed.players) ? parsed.players.map(normalizePlayer) : [],
-      groups: scheduleSource.groups.map(cloneObject),
-      matches: scheduleSource.matches.map(cloneObject),
-      matchPredictions: Array.isArray(parsed.matchPredictions) ? parsed.matchPredictions : [],
-      groupPredictions: Array.isArray(parsed.groupPredictions) ? parsed.groupPredictions : [],
-      activePlayerId: "",
-      adminUnlocked: Boolean(parsed.adminUnlocked),
-      scheduleVersion: scheduleSource.version
-    };
-
-    const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
-    if (!scheduleChanged) {
-      baseState.groups = Array.isArray(parsed.groups) && parsed.groups.length
-        ? parsed.groups.map((group) => normalizeGroup(group, scheduleSource.groupLookup))
-        : scheduleSource.groups.map(cloneObject);
-      baseState.matches = Array.isArray(parsed.matches) && parsed.matches.length
-        ? parsed.matches.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup))
-        : scheduleSource.matches.map(cloneObject);
-    }
-
-    syncGroupPredictionDeadlines(baseState.groups, baseState.matches);
-    reconcilePredictions(baseState);
-    return baseState;
+    return normalizeStoredState(JSON.parse(raw));
   } catch (error) {
-    console.warn("Could not load saved state. Resetting to defaults.", error);
+    console.warn("Could not load the local fallback state. Resetting to defaults.", error);
     return createDefaultState();
   }
+}
+
+function saveLocalSharedState(nextState = state) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(nextState));
+}
+
+function loadSessionState() {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) {
+      return createDefaultSessionState();
+    }
+
+    const parsed = JSON.parse(raw);
+    return {
+      activePlayerId: String(parsed?.activePlayerId || ""),
+      adminUnlocked: Boolean(parsed?.adminUnlocked)
+    };
+  } catch (error) {
+    console.warn("Could not load the local session. Resetting to defaults.", error);
+    return createDefaultSessionState();
+  }
+}
+
+function createDefaultSessionState() {
+  return {
+    activePlayerId: "",
+    adminUnlocked: false
+  };
+}
+
+function saveSessionState() {
+  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionState));
+}
+
+function normalizeStoredState(parsed) {
+  const baseState = {
+    players: Array.isArray(parsed.players) ? parsed.players.map(normalizePlayer) : [],
+    groups: scheduleSource.groups.map(cloneObject),
+    matches: scheduleSource.matches.map(cloneObject),
+    matchPredictions: Array.isArray(parsed.matchPredictions) ? parsed.matchPredictions : [],
+    groupPredictions: Array.isArray(parsed.groupPredictions) ? parsed.groupPredictions : [],
+    scheduleVersion: scheduleSource.version
+  };
+
+  const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
+  if (!scheduleChanged) {
+    baseState.groups = Array.isArray(parsed.groups) && parsed.groups.length
+      ? parsed.groups.map((group) => normalizeGroup(group, scheduleSource.groupLookup))
+      : scheduleSource.groups.map(cloneObject);
+    baseState.matches = Array.isArray(parsed.matches) && parsed.matches.length
+      ? parsed.matches.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup))
+      : scheduleSource.matches.map(cloneObject);
+  }
+
+  syncGroupPredictionDeadlines(baseState.groups, baseState.matches);
+  reconcilePredictions(baseState);
+  return baseState;
 }
 
 function reconcilePredictions(nextState) {
@@ -148,14 +192,210 @@ function reconcilePredictions(nextState) {
       predictedThird: String(prediction.predictedThird || ""),
       predictedThirdQualifies: Boolean(prediction.predictedThirdQualifies)
     }));
+}
 
-  if (!validPlayerIds.has(nextState.activePlayerId)) {
-    nextState.activePlayerId = "";
+function reconcileSessionState() {
+  const validPlayerIds = new Set(state.players.map((player) => String(player.id)));
+  if (!validPlayerIds.has(sessionState.activePlayerId)) {
+    sessionState.activePlayerId = "";
+  }
+  saveSessionState();
+}
+
+async function hydrateState(options = {}) {
+  const response = await fetchSharedState(options);
+  if (!response) {
+    state = loadLocalSharedState();
+    reconcileSessionState();
+    recalculatePoints();
+    return;
+  }
+
+  persistence.backendAvailable = true;
+  persistence.revision = Number(response.revision || 0);
+  state = response.state ? normalizeStoredState(response.state) : createDefaultState();
+
+  if (!response.state) {
+    const initialized = await commitSharedState(state, 0, options);
+    if (initialized?.ok) {
+      persistence.revision = initialized.revision;
+      state = normalizeStoredState(initialized.state);
+    }
+  }
+
+  saveLocalSharedState(state);
+  reconcileSessionState();
+  recalculatePoints();
+}
+
+async function fetchSharedState({ silent = false } = {}) {
+  try {
+    const response = await fetch(`${SHARED_STATE_ENDPOINT}?t=${Date.now()}`, {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.message || "Shared storage response was not successful.");
+    }
+
+    return payload;
+  } catch (error) {
+    persistence.backendAvailable = false;
+    if (!silent) {
+      console.warn("Shared storage is unavailable. Falling back to local browser storage.", error);
+      showToast("Shared storage unavailable. Saving only on this browser.", "info");
+    }
+    return null;
   }
 }
 
-function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+async function commitSharedState(nextState, baseRevision, { silent = false } = {}) {
+  try {
+    const response = await fetch(SHARED_STATE_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        action: "replaceState",
+        baseRevision,
+        state: nextState
+      })
+    });
+
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      return payload;
+    }
+
+    return payload;
+  } catch (error) {
+    persistence.backendAvailable = false;
+    if (!silent) {
+      console.warn("Could not save to shared storage. Falling back to local browser storage.", error);
+      showToast("Shared save failed. Saving only on this browser.", "error");
+    }
+    return null;
+  }
+}
+
+async function applySharedMutation(mutator, options = {}) {
+  const maxAttempts = persistence.backendAvailable ? 3 : 1;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const sourceState = cloneObject(state);
+    const draftState = normalizeStoredState(sourceState);
+    let result;
+
+    try {
+      result = mutator(draftState);
+    } catch (error) {
+      if (error?.message) {
+        showToast(error.message, "error");
+      }
+      return { ok: false, error };
+    }
+
+    reconcilePredictions(draftState);
+    recalculatePoints(draftState);
+
+    if (!persistence.backendAvailable) {
+      state = draftState;
+      saveLocalSharedState(state);
+      reconcileSessionState();
+      return { ok: true, result, state };
+    }
+
+    const saved = await commitSharedState(draftState, persistence.revision, options);
+    if (saved?.ok) {
+      persistence.revision = Number(saved.revision || persistence.revision);
+      state = normalizeStoredState(saved.state);
+      saveLocalSharedState(state);
+      reconcileSessionState();
+      recalculatePoints();
+      return { ok: true, result, state };
+    }
+
+    if (saved?.conflict) {
+      persistence.revision = Number(saved.revision || persistence.revision);
+      state = normalizeStoredState(saved.state);
+      saveLocalSharedState(state);
+      reconcileSessionState();
+      recalculatePoints();
+      lastError = new Error("Shared data changed. Retrying with the latest version.");
+      continue;
+    }
+
+    lastError = saved ? new Error(saved.message || "Could not save shared state.") : new Error("Could not save shared state.");
+    break;
+  }
+
+  if (persistence.backendAvailable) {
+    await hydrateState({ silent: true });
+  }
+
+  if (lastError?.message) {
+    showToast(lastError.message, "error");
+  }
+  return { ok: false, error: lastError };
+}
+
+function startSharedSyncLoop() {
+  if (uiState.syncTimerId) {
+    window.clearInterval(uiState.syncTimerId);
+  }
+
+  uiState.syncTimerId = window.setInterval(() => {
+    void syncSharedState();
+  }, SHARED_SYNC_INTERVAL_MS);
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void syncSharedState({ silent: true });
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    void syncSharedState({ silent: true });
+  });
+
+  window.addEventListener("pageshow", () => {
+    void syncSharedState({ silent: true });
+  });
+
+  window.addEventListener("online", () => {
+    void syncSharedState({ silent: true });
+  });
+}
+
+function shouldDeferSharedRefresh() {
+  const activeElement = document.activeElement;
+  return Boolean(activeElement?.closest(".match-form, .group-form, .admin-match-form, .admin-group-form"));
+}
+
+async function syncSharedState({ silent = true } = {}) {
+  if (shouldDeferSharedRefresh()) {
+    return;
+  }
+
+  const remote = await fetchSharedState({ silent });
+  if (!remote || Number(remote.revision || 0) === persistence.revision) {
+    return;
+  }
+
+  persistence.revision = Number(remote.revision || persistence.revision);
+  state = normalizeStoredState(remote.state || createDefaultState());
+  saveLocalSharedState(state);
+  reconcileSessionState();
+  recalculatePoints();
+  populateMatchFilters();
+  renderAll();
 }
 
 function bindEvents() {
@@ -172,29 +412,33 @@ function bindEvents() {
     renderHistory();
   });
 
-  document.addEventListener("submit", handleSubmit);
-  document.addEventListener("click", handleClick);
+  document.addEventListener("submit", (event) => {
+    void handleSubmit(event);
+  });
+  document.addEventListener("click", (event) => {
+    void handleClick(event);
+  });
   document.addEventListener("change", handleChange);
 }
 
-function handleSubmit(event) {
+async function handleSubmit(event) {
   const form = event.target;
 
   if (form.id === "loginForm") {
     event.preventDefault();
-    handleLogin(form);
+    await handleLogin(form);
     return;
   }
 
   if (form.matches(".match-form")) {
     event.preventDefault();
-    handleMatchPrediction(form);
+    await handleMatchPrediction(form);
     return;
   }
 
   if (form.matches(".group-form")) {
     event.preventDefault();
-    handleGroupPrediction(form);
+    await handleGroupPrediction(form);
     return;
   }
 
@@ -206,17 +450,17 @@ function handleSubmit(event) {
 
   if (form.matches(".admin-match-form")) {
     event.preventDefault();
-    handleAdminMatchUpdate(form);
+    await handleAdminMatchUpdate(form);
     return;
   }
 
   if (form.matches(".admin-group-form")) {
     event.preventDefault();
-    handleAdminGroupUpdate(form);
+    await handleAdminGroupUpdate(form);
   }
 }
 
-function handleClick(event) {
+async function handleClick(event) {
   const target = event.target;
 
   if (target.matches("[data-action='calculate-points']")) {
@@ -233,8 +477,21 @@ function handleClick(event) {
       return;
     }
 
-    state = createDefaultState();
-    saveState();
+    const result = await applySharedMutation((draftState) => {
+      const nextState = createDefaultState();
+      draftState.players = nextState.players;
+      draftState.groups = nextState.groups;
+      draftState.matches = nextState.matches;
+      draftState.matchPredictions = nextState.matchPredictions;
+      draftState.groupPredictions = nextState.groupPredictions;
+      draftState.scheduleVersion = nextState.scheduleVersion;
+    });
+    if (!result.ok) {
+      return;
+    }
+
+    sessionState = createDefaultSessionState();
+    saveSessionState();
     populateMatchFilters();
     renderAll();
     showToast("All data has been reset", "info");
@@ -247,15 +504,15 @@ function handleClick(event) {
   }
 
   if (target.matches("[data-action='lock-admin']")) {
-    state.adminUnlocked = false;
-    saveState();
+    sessionState.adminUnlocked = false;
+    saveSessionState();
     renderAdmin();
   }
 }
 
 function handleChange(event) {
   if (event.target.id === "importMatchesInput") {
-    importMatchesFromFile(event.target.files?.[0]);
+    void importMatchesFromFile(event.target.files?.[0]);
     return;
   }
 
@@ -268,7 +525,7 @@ function handleChange(event) {
   }
 }
 
-function handleLogin(form) {
+async function handleLogin(form) {
   const formData = new FormData(form);
   const rawName = String(formData.get("playerName") || "").replace(/\s+/g, " ").trim();
   const playerPin = normalizePlayerPin(formData.get("playerPin"));
@@ -283,38 +540,47 @@ function handleLogin(form) {
     return;
   }
 
-  const existingPlayer = state.players.find((player) => normalizeName(player.name) === normalizeName(rawName));
-  let player = existingPlayer;
+  const result = await applySharedMutation((draftState) => {
+    const existingPlayer = draftState.players.find((player) => normalizeName(player.name) === normalizeName(rawName));
+    let player = existingPlayer;
 
-  if (!player) {
-    player = {
-      id: createId("player"),
-      name: rawName,
-      pin: playerPin,
-      totalPoints: 0,
-      matchPoints: 0,
-      groupPoints: 0,
-      exactScores: 0,
-      createdAt: new Date().toISOString(),
-      lastPredictionTime: null
+    if (!player) {
+      player = {
+        id: createId("player"),
+        name: rawName,
+        pin: playerPin,
+        totalPoints: 0,
+        matchPoints: 0,
+        groupPoints: 0,
+        exactScores: 0,
+        createdAt: new Date().toISOString(),
+        lastPredictionTime: null
+      };
+      draftState.players.push(player);
+    } else if (!player.pin) {
+      player.pin = playerPin;
+    } else if (player.pin !== playerPin) {
+      throw new Error("Wrong PIN for this player");
+    }
+
+    return {
+      playerId: player.id,
+      existingPlayer: Boolean(existingPlayer)
     };
-    state.players.push(player);
-  } else if (!player.pin) {
-    player.pin = playerPin;
-  } else if (player.pin !== playerPin) {
-    showToast("Wrong PIN for this player", "error");
+  });
+
+  if (!result.ok) {
     return;
   }
 
-  state.activePlayerId = player.id;
-  saveState();
-  recalculatePoints();
+  sessionState.activePlayerId = result.result.playerId;
+  saveSessionState();
   renderAll();
   form.reset();
-  showToast(existingPlayer ? "Welcome back" : "Player saved", "success");
+  showToast(result.result.existingPlayer ? "Welcome back" : "Player saved", "success");
 }
 
-function handleMatchPrediction(form) {
+async function handleMatchPrediction(form) {
   const player = getActivePlayer();
   if (!player) {
     showToast("Log in to save predictions", "error");
@@ -345,31 +611,48 @@ function handleMatchPrediction(form) {
   }
 
   const now = new Date().toISOString();
-  const existingPrediction = getMatchPrediction(player.id, matchId);
+  const result = await applySharedMutation((draftState) => {
+    const draftPlayer = draftState.players.find((item) => item.id === player.id);
+    const draftMatch = draftState.matches.find((item) => String(item.id) === matchId);
+    const existingPrediction = getMatchPrediction(player.id, matchId, draftState);
 
-  if (existingPrediction) {
-    showToast("You can submit only once for this match", "error");
+    if (!draftPlayer) {
+      throw new Error("Player session expired. Please log in again.");
+    }
+
+    if (!draftMatch) {
+      throw new Error("Match not found");
+    }
+
+    if (!isPredictionOpen(draftMatch.predictionDeadline)) {
+      throw new Error("Deadline passed");
+    }
+
+    if (existingPrediction) {
+      throw new Error("You can submit only once for this match");
+    }
+
+    draftState.matchPredictions.push({
+      id: createId("mp"),
+      playerId: draftPlayer.id,
+      playerName: draftPlayer.name,
+      matchId,
+      predictedScoreA,
+      predictedScoreB,
+      submittedAt: now,
+      points: 0
+    });
+  });
+
+  if (!result.ok) {
     return;
   }
 
-  state.matchPredictions.push({
-    id: createId("mp"),
-    playerId: player.id,
-    playerName: player.name,
-    matchId,
-    predictedScoreA,
-    predictedScoreB,
-    submittedAt: now,
-    points: 0
-  });
-
-  saveState();
-  recalculatePoints();
   renderAll();
   showToast("Prediction saved", "success");
 }
 
-function handleGroupPrediction(form) {
+async function handleGroupPrediction(form) {
   const player = getActivePlayer();
   if (!player) {
     showToast("Log in to save predictions", "error");
@@ -406,34 +689,50 @@ function handleGroupPrediction(form) {
     return;
   }
 
-  if (predictedThirdQualifies && countPlayerBestThirdSelections(player.id, groupId) >= BEST_THIRD_QUALIFIERS_COUNT) {
-    showToast(`You can only qualify ${BEST_THIRD_QUALIFIERS_COUNT} third-placed teams`, "error");
-    return;
-  }
-
   const now = new Date().toISOString();
-  const existingPrediction = getGroupPrediction(player.id, groupId);
+  const result = await applySharedMutation((draftState) => {
+    const draftPlayer = draftState.players.find((item) => item.id === player.id);
+    const draftGroup = draftState.groups.find((item) => String(item.id) === groupId);
+    const existingPrediction = getGroupPrediction(player.id, groupId, draftState);
 
-  if (existingPrediction) {
-    showToast("You can submit only once for this group", "error");
-    return;
-  }
+    if (!draftPlayer) {
+      throw new Error("Player session expired. Please log in again.");
+    }
 
-  state.groupPredictions.push({
-    id: createId("gp"),
-    playerId: player.id,
-    playerName: player.name,
-    groupId,
-    predictedFirst,
-    predictedSecond,
-    predictedThird,
-    predictedThirdQualifies,
-    submittedAt: now,
-    points: 0
+    if (!draftGroup) {
+      throw new Error("Group not found");
+    }
+
+    if (!isPredictionOpen(draftGroup.predictionDeadline)) {
+      throw new Error("Deadline passed");
+    }
+
+    if (predictedThirdQualifies && countPlayerBestThirdSelections(player.id, groupId, draftState) >= BEST_THIRD_QUALIFIERS_COUNT) {
+      throw new Error(`You can only qualify ${BEST_THIRD_QUALIFIERS_COUNT} third-placed teams`);
+    }
+
+    if (existingPrediction) {
+      throw new Error("You can submit only once for this group");
+    }
+
+    draftState.groupPredictions.push({
+      id: createId("gp"),
+      playerId: draftPlayer.id,
+      playerName: draftPlayer.name,
+      groupId,
+      predictedFirst,
+      predictedSecond,
+      predictedThird,
+      predictedThirdQualifies,
+      submittedAt: now,
+      points: 0
+    });
   });
 
-  saveState();
-  recalculatePoints();
+  if (!result.ok) {
+    return;
+  }
+
   renderAll();
   showToast("Prediction saved", "success");
 }
@@ -445,13 +744,13 @@ function handleAdminLogin(form) {
     return;
   }
 
-  state.adminUnlocked = true;
-  saveState();
+  sessionState.adminUnlocked = true;
+  saveSessionState();
   renderAdmin();
   showToast("Admin login success", "success");
 }
 
-function handleAdminMatchUpdate(form) {
+async function handleAdminMatchUpdate(form) {
   const matchId = String(form.dataset.matchId || "");
   const match = state.matches.find((item) => String(item.id) === matchId);
   if (!match) {
@@ -491,20 +790,30 @@ function handleAdminMatchUpdate(form) {
     return;
   }
 
-  match.matchDate = matchDate;
-  match.predictionDeadline = predictionDeadline;
-  match.actualScoreA = actualScoreA;
-  match.actualScoreB = actualScoreB;
-  match.isFinished = isFinished;
+  const result = await applySharedMutation((draftState) => {
+    const draftMatch = draftState.matches.find((item) => String(item.id) === matchId);
+    if (!draftMatch) {
+      throw new Error("Match not found");
+    }
 
-  syncGroupPredictionDeadlines(state.groups, state.matches);
-  saveState();
-  recalculatePoints();
+    draftMatch.matchDate = matchDate;
+    draftMatch.predictionDeadline = predictionDeadline;
+    draftMatch.actualScoreA = actualScoreA;
+    draftMatch.actualScoreB = actualScoreB;
+    draftMatch.isFinished = isFinished;
+
+    syncGroupPredictionDeadlines(draftState.groups, draftState.matches);
+  });
+
+  if (!result.ok) {
+    return;
+  }
+
   renderAll();
   showToast("Match result updated", "success");
 }
 
-function handleAdminGroupUpdate(form) {
+async function handleAdminGroupUpdate(form) {
   const groupId = String(form.dataset.groupId || "");
   const group = state.groups.find((item) => String(item.id) === groupId);
   if (!group) {
@@ -529,18 +838,26 @@ function handleAdminGroupUpdate(form) {
     return;
   }
 
-  if (actualThird && actualThirdQualifies && countActualBestThirdSelections(groupId) >= BEST_THIRD_QUALIFIERS_COUNT) {
-    showToast(`Only ${BEST_THIRD_QUALIFIERS_COUNT} third-placed teams can qualify`, "error");
+  const result = await applySharedMutation((draftState) => {
+    const draftGroup = draftState.groups.find((item) => String(item.id) === groupId);
+    if (!draftGroup) {
+      throw new Error("Group not found");
+    }
+
+    if (actualThird && actualThirdQualifies && countActualBestThirdSelections(groupId, draftState) >= BEST_THIRD_QUALIFIERS_COUNT) {
+      throw new Error(`Only ${BEST_THIRD_QUALIFIERS_COUNT} third-placed teams can qualify`);
+    }
+
+    draftGroup.actualFirst = actualFirst || null;
+    draftGroup.actualSecond = actualSecond || null;
+    draftGroup.actualThird = actualThird || null;
+    draftGroup.actualThirdQualifies = actualThird ? actualThirdQualifies : null;
+  });
+
+  if (!result.ok) {
     return;
   }
 
-  group.actualFirst = actualFirst || null;
-  group.actualSecond = actualSecond || null;
-  group.actualThird = actualThird || null;
-  group.actualThirdQualifies = actualThird ? actualThirdQualifies : null;
-
-  saveState();
-  recalculatePoints();
   renderAll();
   showToast("Group ranking updated", "success");
 }
@@ -968,7 +1285,7 @@ function renderHistory() {
 }
 
 function renderAdmin() {
-  if (!state.adminUnlocked) {
+  if (!sessionState.adminUnlocked) {
     dom.adminGate.innerHTML = `
       <form class="admin-login-form">
         <label class="field-label" for="adminPasswordInput">Admin password</label>
@@ -1120,10 +1437,10 @@ function renderAdmin() {
   `;
 }
 
-function recalculatePoints() {
+function recalculatePoints(sourceState = state) {
   const playerMap = new Map();
 
-  state.players.forEach((player) => {
+  sourceState.players.forEach((player) => {
     player.totalPoints = 0;
     player.matchPoints = 0;
     player.groupPoints = 0;
@@ -1132,8 +1449,8 @@ function recalculatePoints() {
     playerMap.set(player.id, player);
   });
 
-  state.matchPredictions.forEach((prediction) => {
-    const match = state.matches.find((item) => String(item.id) === String(prediction.matchId));
+  sourceState.matchPredictions.forEach((prediction) => {
+    const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
     const player = playerMap.get(prediction.playerId);
     prediction.points = match ? calculateMatchPredictionPoints(prediction, match) : 0;
     if (!player) {
@@ -1149,8 +1466,8 @@ function recalculatePoints() {
     prediction.playerName = player.name;
   });
 
-  state.groupPredictions.forEach((prediction) => {
-    const group = state.groups.find((item) => String(item.id) === String(prediction.groupId));
+  sourceState.groupPredictions.forEach((prediction) => {
+    const group = sourceState.groups.find((item) => String(item.id) === String(prediction.groupId));
     const player = playerMap.get(prediction.playerId);
     prediction.points = group ? calculateGroupPredictionPoints(prediction, group) : 0;
     if (!player) {
@@ -1162,8 +1479,6 @@ function recalculatePoints() {
     player.lastPredictionTime = getLatestTime(player.lastPredictionTime, prediction.submittedAt);
     prediction.playerName = player.name;
   });
-
-  saveState();
 }
 
 function calculateMatchPredictionPoints(prediction, match) {
@@ -1206,8 +1521,8 @@ function calculateGroupPredictionPoints(prediction, group) {
   return 0;
 }
 
-function getLeaderboard() {
-  return state.players
+function getLeaderboard(sourceState = state) {
+  return sourceState.players
     .slice()
     .sort((a, b) => {
       if (b.totalPoints !== a.totalPoints) {
@@ -1223,8 +1538,8 @@ function getLeaderboard() {
     });
 }
 
-function getPlayerRank(playerId) {
-  const leaderboard = getLeaderboard();
+function getPlayerRank(playerId, sourceState = state) {
+  const leaderboard = getLeaderboard(sourceState);
   const index = leaderboard.findIndex((player) => player.id === playerId);
   return index >= 0 ? index + 1 : null;
 }
@@ -1239,15 +1554,15 @@ function getCurrentRoundLabel() {
 }
 
 function getActivePlayer() {
-  return state.players.find((player) => player.id === state.activePlayerId) || null;
+  return state.players.find((player) => player.id === sessionState.activePlayerId) || null;
 }
 
-function getMatchPrediction(playerId, matchId) {
-  return state.matchPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.matchId) === String(matchId)) || null;
+function getMatchPrediction(playerId, matchId, sourceState = state) {
+  return sourceState.matchPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.matchId) === String(matchId)) || null;
 }
 
-function getGroupPrediction(playerId, groupId) {
-  return state.groupPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.groupId) === String(groupId)) || null;
+function getGroupPrediction(playerId, groupId, sourceState = state) {
+  return sourceState.groupPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.groupId) === String(groupId)) || null;
 }
 
 function getMatchFilters() {
@@ -1445,24 +1760,29 @@ function exportLeaderboard() {
   showToast("Leaderboard exported", "success");
 }
 
-function importMatchesFromFile(file) {
+async function importMatchesFromFile(file) {
   if (!file) {
     return;
   }
 
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     try {
       const parsed = JSON.parse(String(reader.result));
       if (!Array.isArray(parsed)) {
         throw new Error("The file must contain an array of matches.");
       }
 
-      state.matches = parsed.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup));
-      syncGroupPredictionDeadlines(state.groups, state.matches);
-      reconcilePredictions(state);
-      saveState();
-      recalculatePoints();
+      const result = await applySharedMutation((draftState) => {
+        draftState.matches = parsed.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup));
+        syncGroupPredictionDeadlines(draftState.groups, draftState.matches);
+        reconcilePredictions(draftState);
+      });
+
+      if (!result.ok) {
+        return;
+      }
+
       populateMatchFilters();
       renderAll();
       showToast("Matches imported", "success");
@@ -1938,16 +2258,16 @@ function shouldReplaceStoredTeamLogo(logo) {
   );
 }
 
-function countPlayerBestThirdSelections(playerId, currentGroupId = "") {
-  return state.groupPredictions.filter((prediction) => (
+function countPlayerBestThirdSelections(playerId, currentGroupId = "", sourceState = state) {
+  return sourceState.groupPredictions.filter((prediction) => (
     prediction.playerId === playerId &&
     prediction.predictedThirdQualifies &&
     String(prediction.groupId) !== String(currentGroupId)
   )).length;
 }
 
-function countActualBestThirdSelections(currentGroupId = "") {
-  return state.groups.filter((group) => (
+function countActualBestThirdSelections(currentGroupId = "", sourceState = state) {
+  return sourceState.groups.filter((group) => (
     group.actualThirdQualifies &&
     String(group.id) !== String(currentGroupId)
   )).length;
