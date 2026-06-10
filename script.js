@@ -35,6 +35,7 @@ const scheduleSource = normalizeWorldCupData(
 
 const dom = {
   startPredictionsBtn: document.getElementById("startPredictionsBtn"),
+  syncBanner: document.getElementById("syncBanner"),
   statPlayers: document.getElementById("statPlayers"),
   statPredictions: document.getElementById("statPredictions"),
   statRound: document.getElementById("statRound"),
@@ -67,7 +68,9 @@ const uiState = {
 
 const persistence = {
   backendAvailable: false,
-  revision: 0
+  revision: 0,
+  status: "pending",
+  message: "Connecting to shared storage..."
 };
 
 let state = createDefaultState();
@@ -78,6 +81,7 @@ init();
 async function init() {
   buildParticles();
   renderHeroAtmosphere();
+  renderSyncBanner();
   bindEvents();
   await hydrateState();
   recalculatePoints();
@@ -213,6 +217,7 @@ async function hydrateState(options = {}) {
 
   persistence.backendAvailable = true;
   persistence.revision = Number(response.revision || 0);
+  setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
   state = response.state ? normalizeStoredState(response.state) : createDefaultState();
 
   if (!response.state) {
@@ -243,12 +248,15 @@ async function fetchSharedState({ silent = false } = {}) {
       throw new Error(payload.message || "Shared storage response was not successful.");
     }
 
+    persistence.backendAvailable = true;
+    setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
     return payload;
   } catch (error) {
     persistence.backendAvailable = false;
+    setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
     if (!silent) {
-      console.warn("Shared storage is unavailable. Falling back to local browser storage.", error);
-      showToast("Shared storage unavailable. Saving only on this browser.", "info");
+      console.warn("Shared storage is unavailable.", error);
+      showToast(getSharedStorageUnavailableMessage(), "error");
     }
     return null;
   }
@@ -270,22 +278,48 @@ async function commitSharedState(nextState, baseRevision, { silent = false } = {
 
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
+      if (payload?.conflict) {
+        persistence.backendAvailable = true;
+        setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
+      } else if (!response.ok) {
+        persistence.backendAvailable = false;
+        setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
+      }
       return payload;
     }
 
+    persistence.backendAvailable = true;
+    setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
     return payload;
   } catch (error) {
     persistence.backendAvailable = false;
+    setPersistenceStatus("disconnected", getSharedStorageUnavailableMessage());
     if (!silent) {
-      console.warn("Could not save to shared storage. Falling back to local browser storage.", error);
-      showToast("Shared save failed. Saving only on this browser.", "error");
+      console.warn("Could not save to shared storage.", error);
+      showToast(getSharedStorageUnavailableMessage(), "error");
     }
     return null;
   }
 }
 
 async function applySharedMutation(mutator, options = {}) {
-  const maxAttempts = persistence.backendAvailable ? 3 : 1;
+  if (!persistence.backendAvailable) {
+    const remote = await fetchSharedState({ silent: true });
+    if (remote) {
+      persistence.revision = Number(remote.revision || 0);
+      state = remote.state ? normalizeStoredState(remote.state) : createDefaultState();
+      saveLocalSharedState(state);
+      reconcileSessionState();
+      recalculatePoints();
+      renderAll();
+    } else {
+      const error = new Error(getSharedStorageUnavailableMessage());
+      showToast(error.message, "error");
+      return { ok: false, error };
+    }
+  }
+
+  const maxAttempts = 3;
   let lastError = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -304,13 +338,6 @@ async function applySharedMutation(mutator, options = {}) {
 
     reconcilePredictions(draftState);
     recalculatePoints(draftState);
-
-    if (!persistence.backendAvailable) {
-      state = draftState;
-      saveLocalSharedState(state);
-      reconcileSessionState();
-      return { ok: true, result, state };
-    }
 
     const saved = await commitSharedState(draftState, persistence.revision, options);
     if (saved?.ok) {
@@ -882,12 +909,16 @@ function renderStats() {
 
 function renderWelcomeCard() {
   const player = getActivePlayer();
+  const syncNote = persistence.backendAvailable
+    ? ""
+    : `<br><span class="sync-inline-warning">Shared sync is offline on this device.</span>`;
+
   if (!player) {
     dom.loginPanel?.classList.remove("is-logged-in");
     dom.loginForm?.classList.remove("is-collapsed");
     dom.welcomeCard.innerHTML = `
       <p class="welcome-title">No player signed in</p>
-      <p class="welcome-text">Log in with your player name and private PIN to save predictions before the deadline.</p>
+      <p class="welcome-text">Log in with your player name and private PIN to save predictions before the deadline.${syncNote}</p>
     `;
     return;
   }
@@ -897,11 +928,38 @@ function renderWelcomeCard() {
     <p class="welcome-title">Welcome, ${escapeHtml(player.name)}</p>
     <p class="welcome-text">
       Total points: <strong>${player.totalPoints}</strong><br>
-      Rank: <strong>${playerRank ? `#${playerRank}` : "Unranked"}</strong>
+      Rank: <strong>${playerRank ? `#${playerRank}` : "Unranked"}</strong>${syncNote}
     </p>
   `;
   dom.loginPanel?.classList.add("is-logged-in");
   dom.loginForm?.classList.add("is-collapsed");
+}
+
+function renderSyncBanner() {
+  if (!dom.syncBanner) {
+    return;
+  }
+
+  dom.syncBanner.textContent = persistence.message;
+  dom.syncBanner.className = `sync-banner sync-banner-${persistence.status}`;
+}
+
+function setPersistenceStatus(status, message) {
+  persistence.status = status;
+  persistence.message = message;
+  renderSyncBanner();
+}
+
+function getSharedStorageUnavailableMessage() {
+  if (window.location.protocol === "file:") {
+    return "Shared storage offline. Open the app through a PHP server URL, not file://.";
+  }
+
+  if (window.location.port === "5500" || window.location.port === "5501") {
+    return "Shared storage offline. Live Server usually does not run PHP. Open the app through Apache/PHP.";
+  }
+
+  return "Shared storage offline. Make sure storage.php is running on the same site through PHP.";
 }
 
 function renderMatches() {
