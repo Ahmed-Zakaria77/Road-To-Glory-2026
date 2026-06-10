@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>World Cup Predictor 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&family=Chakra+Petch:wght@500;600;700&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20260610-18">
+  <link rel="icon" type="image/png" href="images/WC26.png">
+</head>
+
+<body>
+  <div class="app-shell">
+    <div class="stadium-glow stadium-glow-left"></div>
+    <div class="stadium-glow stadium-glow-right"></div>
+    <div class="particle-field" id="particleField" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand-mark" href="#home">
+        <img src="images/WC262.png" alt="" style="width: 50px;">
+        <span>Road To Glory 2026</span>
+      </a>
+
+      <nav class="topbar-nav">
+        <a href="#matches">Matches</a>
+        <a href="#groups">Groups</a>
+        <a href="#leaderboard">Leaderboard</a>
+        <a href="#admin">Admin</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero-section section" id="home">
+        <div class="hero-copy">
+          <p class="eyebrow">USA • Canada • Mexico</p>
+          <h1>World Cup Predictor 2026</h1>
+          <p class="hero-subtitle">Predict. Compete. Win.</p>
+          <p class="hero-text">
+            Build your championship story, make your choices during the championship, compete with your friends and
+            strive to reach the top of the rankings.
+          </p>
+          <div class="hero-actions">
+            <button class="primary-button" id="startPredictionsBtn" type="button">Start Predictions</button>
+            <a class="secondary-button" href="#leaderboard">View Leaderboard</a>
+          </div>
+          <div class="hero-logo-rail" id="heroLogoRail"></div>
+        </div>
+
+        <div class="hero-aside">
+          <div class="score-orb">
+            <span class="score-orb-ring"></span>
+            <span class="score-orb-center score-orb-image-wrap" aria-hidden="true">
+              <img class="score-orb-image" src="images/world-cup-trophy.png" alt="FIFA World Cup Trophy" loading="lazy">
+            </span>
+          </div>
+          <div class="stats-grid" id="statsGrid">
+            <article class="stat-card">
+              <span class="stat-label">Total Players</span>
+              <strong class="stat-value" id="statPlayers">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Total Predictions</span>
+              <strong class="stat-value" id="statPredictions">0</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Current Round</span>
+              <strong class="stat-value" id="statRound">Round 1</strong>
+            </article>
+            <article class="stat-card">
+              <span class="stat-label">Leader</span>
+              <strong class="stat-value" id="statLeader">No leader yet</strong>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="login">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Player Access</p>
+            <h2>Join the competition</h2>
+          </div>
+          <p class="section-copy">Each player uses the same name and a private 4-digit PIN. Predictions are locked after
+            the first submission.</p>
+        </div>
+
+        <div class="panel login-panel">
+          <form id="loginForm" class="login-form">
+            <label class="field-label" for="playerNameInput">Player name</label>
+            <div class="login-row login-row-stacked">
+              <input id="playerNameInput" name="playerName" type="text" maxlength="24" placeholder="Enter your name"
+                autocomplete="off" required>
+              <input id="playerPinInput" name="playerPin" type="password" inputmode="numeric" minlength="4"
+                maxlength="4" placeholder="Enter your 4-digit PIN" autocomplete="off" required>
+              <button class="primary-button" type="submit">Enter</button>
+            </div>
+            <p class="admin-help">First login creates your player with this PIN. Returning players must use the same
+              PIN.</p>
+          </form>
+
+          <div class="welcome-card" id="welcomeCard">
+            <p class="welcome-title">No player signed in</p>
+            <p class="welcome-text">Log in to save predictions before the deadline.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="matches">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Match Center</p>
+            <h2>Predict every scoreline</h2>
+          </div>
+          <p class="section-copy">Lock your score picks before kickoff. Exact scores, winners, and margins all matter.
+          </p>
+        </div>
+
+        <div class="panel filters-panel">
+          <div class="filter-grid">
+            <label class="field-group">
+              <span>Round</span>
+              <select id="roundFilter"></select>
+            </label>
+            <label class="field-group">
+              <span>Group</span>
+              <select id="groupFilter"></select>
+            </label>
+            <label class="field-group">
+              <span>Status</span>
+              <select id="statusFilter">
+                <option value="all">All matches</option>
+                <option value="open">Open predictions</option>
+                <option value="closed">Closed predictions</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="rounds-stack" id="matchesContainer"></div>
+      </section>
+
+      <section class="section" id="groups">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Group Stage</p>
+            <h2>Predict the group standings</h2>
+          </div>
+          <p class="section-copy">Choose 1st, 2nd, and 3rd place in every group, then mark whether the 3rd-place team
+            reaches the Round of 32 as one of the best third-placed teams.</p>
+        </div>
+
+        <div class="cards-grid group-grid" id="groupsContainer"></div>
+      </section>
+
+      <section class="section" id="leaderboard">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Standings</p>
+            <h2>Leaderboard</h2>
+          </div>
+          <div class="search-box">
+            <label class="field-label sr-only" for="playerSearchInput">Search player</label>
+            <input id="playerSearchInput" type="search" placeholder="Search player by name">
+          </div>
+        </div>
+
+        <div class="panel leaderboard-panel" id="leaderboardPanel">
+          <div class="podium" id="podium"></div>
+          <div class="table-wrap">
+            <table class="leaderboard-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Player</th>
+                  <th>Total</th>
+                  <th>Match Points</th>
+                  <th>Group Points</th>
+                  <th>Exact Scores</th>
+                  <th>Last Prediction</th>
+                </tr>
+              </thead>
+              <tbody id="leaderboardBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="history">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Timeline</p>
+            <h2>Prediction history</h2>
+          </div>
+          <p class="section-copy">Track who predicted what, when it was submitted, and how many points it earned.</p>
+        </div>
+
+        <div class="panel history-panel">
+          <div class="history-list" id="historyContainer"></div>
+        </div>
+      </section>
+
+      <section class="section" id="admin">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Control Room</p>
+            <h2>Admin panel</h2>
+          </div>
+          <p class="section-copy">Enter final results, calculate points, manage imported fixtures, and reset the game if
+            needed.</p>
+        </div>
+
+        <div class="panel admin-panel">
+          <div id="adminGate"></div>
+          <div id="adminWorkspace" class="hidden"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <p>Created by Ahmed Zakaria</p>
+    </footer>
+  </div>
+
+  <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
+
+  <script src="data.js?v=20260610-18"></script>
+  <script src="script.js?v=20260610-18"></script>
+</body>
+
+</html>
