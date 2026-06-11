@@ -1152,7 +1152,7 @@ function buildDefaultEnvelope() {
 
 function getConnectedStorageMessage(backend) {
   if (backend.kind === "firebase-rest") {
-    return "Firebase shared storage connected. All devices on GitHub Pages see the same players and admin updates.";
+    return "concted";
   }
 
   return "Shared storage connected. All devices see the same players and admin updates.";
