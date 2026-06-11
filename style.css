@@ -15,6 +15,7 @@
   --bronze: #ce8b5b;
   --shadow: 0 24px 60px rgba(4, 12, 28, 0.38);
   --radius: 24px;
+  --topbar-offset: 84px;
 }
 
 * {
@@ -23,6 +24,7 @@
 
 html {
   scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--topbar-offset) + 18px);
 }
 
 body {
@@ -83,6 +85,7 @@ select:disabled {
 .app-shell {
   position: relative;
   overflow: hidden;
+  padding-top: var(--topbar-offset);
 }
 
 .stadium-glow {
@@ -136,8 +139,10 @@ select:disabled {
 }
 
 .topbar {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 30;
   display: flex;
   justify-content: space-between;
@@ -151,7 +156,7 @@ select:disabled {
 
 .sync-banner {
   position: sticky;
-  top: 84px;
+  top: var(--topbar-offset);
   z-index: 29;
   padding: 0.75rem 4vw;
   text-align: center;
@@ -451,7 +456,6 @@ main {
 .match-card,
 .group-card,
 .history-item,
-.podium-card,
 .admin-card {
   position: relative;
   overflow: hidden;
@@ -481,7 +485,6 @@ main {
 .stat-card,
 .match-card,
 .group-card,
-.podium-card,
 .admin-card,
 .history-item {
   padding: 1.1rem;
@@ -512,6 +515,16 @@ main {
   align-items: end;
   gap: 1rem;
   margin-bottom: 1.25rem;
+}
+
+.history-heading-side {
+  display: grid;
+  gap: 0.9rem;
+  justify-items: end;
+}
+
+.history-filter-group {
+  width: min(280px, 100%);
 }
 
 .section-heading h2 {
@@ -792,10 +805,14 @@ select:focus {
 }
 
 .team-name-wrap strong,
-.table-player,
 .history-title {
   display: block;
   font-weight: 700;
+}
+
+.table-player {
+  font-weight: 700;
+  vertical-align: middle;
 }
 
 .team-logo {
@@ -981,46 +998,6 @@ select:focus {
   box-shadow: 0 0 0 3px rgba(31, 170, 89, 0.18);
 }
 
-.podium {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1rem;
-  margin-bottom: 1rem;
-}
-
-.podium-card {
-  text-align: center;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(7, 18, 33, 0.72));
-}
-
-.podium-card.first {
-  transform: translateY(-10px);
-  border-color: rgba(247, 201, 72, 0.36);
-}
-
-.medal {
-  display: inline-grid;
-  place-items: center;
-  width: 2.2rem;
-  height: 2.2rem;
-  margin: 0 auto 0.75rem;
-  border-radius: 50%;
-  font-weight: 800;
-  color: #07111d;
-}
-
-.medal.gold {
-  background: var(--gold);
-}
-
-.medal.silver {
-  background: var(--silver);
-}
-
-.medal.bronze {
-  background: var(--bronze);
-}
-
 .table-wrap {
   overflow-x: auto;
 }
@@ -1034,6 +1011,7 @@ select:focus {
 .leaderboard-table td {
   padding: 0.9rem 0.8rem;
   text-align: left;
+  vertical-align: middle;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -1053,6 +1031,25 @@ select:focus {
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.08);
   font-weight: 800;
+  color: var(--text);
+}
+
+.rank-badge-gold {
+  background: linear-gradient(135deg, #ffe38a, #f7c948);
+  color: #07111d;
+  box-shadow: 0 0 0 1px rgba(247, 201, 72, 0.22), 0 10px 22px rgba(247, 201, 72, 0.18);
+}
+
+.rank-badge-silver {
+  background: linear-gradient(135deg, #edf3ff, #c7d1e0);
+  color: #07111d;
+  box-shadow: 0 0 0 1px rgba(199, 209, 224, 0.24), 0 10px 22px rgba(199, 209, 224, 0.18);
+}
+
+.rank-badge-bronze {
+  background: linear-gradient(135deg, #efbb8c, #c8824f);
+  color: #07111d;
+  box-shadow: 0 0 0 1px rgba(200, 130, 79, 0.24), 0 10px 22px rgba(200, 130, 79, 0.18);
 }
 
 .history-list {
@@ -1234,8 +1231,7 @@ select:focus {
 
   .filter-grid,
   .group-rank-grid,
-  .group-summary-grid,
-  .podium {
+  .group-summary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1244,9 +1240,18 @@ select:focus {
     flex-direction: column;
     align-items: start;
   }
+
+  .history-heading-side {
+    width: 100%;
+    justify-items: stretch;
+  }
 }
 
 @media (max-width: 720px) {
+  :root {
+    --topbar-offset: 124px;
+  }
+
   .topbar {
     flex-direction: column;
     align-items: start;
@@ -1288,5 +1293,9 @@ select:focus {
 
   .history-item {
     align-items: stretch;
+  }
+
+  .history-filter-group {
+    width: 100%;
   }
 }

@@ -6,8 +6,7 @@ const ADMIN_PASSWORD = "ziko97";
 
 const MATCH_SCORING = {
   exactScore: 6,
-  correctResult: 5,
-  goalDifference: 1
+  correctResult: 5
 };
 
 const GROUP_SCORING = {
@@ -53,9 +52,9 @@ const dom = {
   matchesContainer: document.getElementById("matchesContainer"),
   groupsContainer: document.getElementById("groupsContainer"),
   playerSearchInput: document.getElementById("playerSearchInput"),
-  podium: document.getElementById("podium"),
   leaderboardPanel: document.getElementById("leaderboardPanel"),
   leaderboardBody: document.getElementById("leaderboardBody"),
+  historyPlayerFilter: document.getElementById("historyPlayerFilter"),
   historyContainer: document.getElementById("historyContainer"),
   adminGate: document.getElementById("adminGate"),
   adminWorkspace: document.getElementById("adminWorkspace"),
@@ -441,10 +440,8 @@ function bindEvents() {
   dom.roundFilter.addEventListener("change", renderMatches);
   dom.groupFilter.addEventListener("change", renderMatches);
   dom.statusFilter.addEventListener("change", renderMatches);
-  dom.playerSearchInput.addEventListener("input", () => {
-    renderLeaderboard();
-    renderHistory();
-  });
+  dom.playerSearchInput.addEventListener("input", renderLeaderboard);
+  dom.historyPlayerFilter.addEventListener("change", renderHistory);
 
   document.addEventListener("submit", (event) => {
     void handleSubmit(event);
@@ -902,6 +899,7 @@ function renderAll() {
   renderMatches();
   renderGroups();
   renderLeaderboard();
+  renderHistoryPlayerFilter();
   renderHistory();
   renderAdmin();
 }
@@ -1437,15 +1435,29 @@ function renderGroupCard(group, player) {
 
 function renderLeaderboard() {
   const searchTerm = normalizeName(dom.playerSearchInput.value);
-  const leaderboard = getLeaderboard().filter((player) => normalizeName(player.name).includes(searchTerm));
+  const leaderboard = getLeaderboard().filter((player, index) => {
+    if (!searchTerm) {
+      return true;
+    }
+
+    const searchableText = [
+      index + 1,
+      player.name,
+      player.totalPoints,
+      player.matchPoints,
+      player.groupPoints,
+      player.exactScores,
+      player.lastPredictionTime ? formatDateTime(player.lastPredictionTime) : "No predictions yet"
+    ].join(" ");
+
+    return normalizeName(searchableText).includes(searchTerm);
+  });
 
   if (Date.now() < uiState.leaderboardFlashUntil) {
     dom.leaderboardPanel.classList.add("flash");
   } else {
     dom.leaderboardPanel.classList.remove("flash");
   }
-
-  renderPodium(leaderboard.slice(0, 3));
 
   if (!leaderboard.length) {
     dom.leaderboardBody.innerHTML = `
@@ -1458,7 +1470,7 @@ function renderLeaderboard() {
 
   dom.leaderboardBody.innerHTML = leaderboard.map((player, index) => `
     <tr>
-      <td><span class="rank-badge">${index + 1}</span></td>
+      <td><span class="rank-badge ${getRankBadgeClass(index + 1)}">${index + 1}</span></td>
       <td class="table-player">${escapeHtml(player.name)}</td>
       <td>${player.totalPoints}</td>
       <td>${player.matchPoints}</td>
@@ -1469,28 +1481,22 @@ function renderLeaderboard() {
   `).join("");
 }
 
-function renderPodium(players) {
-  if (!players.length) {
-    dom.podium.innerHTML = `<div class="empty-state">The podium will appear once players join.</div>`;
-    return;
+function getRankBadgeClass(rank) {
+  if (rank === 1) {
+    return "rank-badge-gold";
   }
-
-  const order = [players[1], players[0], players[2]].filter(Boolean);
-  dom.podium.innerHTML = order.map((player) => {
-    const rank = players.indexOf(player) + 1;
-    const medalClass = rank === 1 ? "gold" : rank === 2 ? "silver" : "bronze";
-    return `
-      <article class="podium-card ${rank === 1 ? "first" : ""}">
-        <span class="medal ${medalClass}">${rank}</span>
-        <strong>${escapeHtml(player.name)}</strong>
-        <p class="muted">${player.totalPoints} pts</p>
-      </article>
-    `;
-  }).join("");
+  if (rank === 2) {
+    return "rank-badge-silver";
+  }
+  if (rank === 3) {
+    return "rank-badge-bronze";
+  }
+  return "";
 }
 
 function renderHistory() {
-  const searchTerm = normalizeName(dom.playerSearchInput.value);
+  const selectedPlayerId = dom.historyPlayerFilter.value;
+  const isFilteredByPlayer = selectedPlayerId !== "all";
 
   const matchEntries = state.matchPredictions.map((prediction) => {
     const match = state.matches.find((item) => String(item.id) === String(prediction.matchId));
@@ -1499,6 +1505,7 @@ function renderHistory() {
     }
 
     return {
+      playerId: prediction.playerId,
       playerName: prediction.playerName,
       submittedAt: prediction.submittedAt,
       title: `${prediction.playerName} • ${match.teamA} vs ${match.teamB}`,
@@ -1516,6 +1523,7 @@ function renderHistory() {
     }
 
     return {
+      playerId: prediction.playerId,
       playerName: prediction.playerName,
       submittedAt: prediction.submittedAt,
       title: `${prediction.playerName} • ${group.name}`,
@@ -1530,11 +1538,11 @@ function renderHistory() {
 
   const entries = [...matchEntries, ...groupEntries]
     .filter(Boolean)
-    .filter((entry) => normalizeName(entry.playerName).includes(searchTerm))
+    .filter((entry) => !isFilteredByPlayer || entry.playerId === selectedPlayerId)
     .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
   if (!entries.length) {
-    dom.historyContainer.innerHTML = `<div class="empty-state">No prediction history to show yet.</div>`;
+    dom.historyContainer.innerHTML = `<div class="empty-state">${isFilteredByPlayer ? "No prediction history for this player yet." : "No prediction history to show yet."}</div>`;
     return;
   }
 
@@ -1554,6 +1562,21 @@ function renderHistory() {
       </div>
     </article>
   `).join("");
+}
+
+function renderHistoryPlayerFilter() {
+  const previousValue = dom.historyPlayerFilter.value || "all";
+  const players = state.players
+    .slice()
+    .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)));
+
+  dom.historyPlayerFilter.innerHTML = [
+    `<option value="all">All players</option>`,
+    ...players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`)
+  ].join("");
+
+  const hasPreviousValue = previousValue === "all" || players.some((player) => player.id === previousValue);
+  dom.historyPlayerFilter.value = hasPreviousValue ? previousValue : "all";
 }
 
 function renderAdmin() {
@@ -1764,15 +1787,9 @@ function calculateMatchPredictionPoints(prediction, match) {
 
   const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB);
   const predictedOutcome = getOutcome(prediction.predictedScoreA, prediction.predictedScoreB);
-  const actualDifference = match.actualScoreA - match.actualScoreB;
-  const predictedDifference = prediction.predictedScoreA - prediction.predictedScoreB;
 
   if (predictedOutcome === actualOutcome) {
     return MATCH_SCORING.correctResult;
-  }
-
-  if (predictedDifference === actualDifference) {
-    return MATCH_SCORING.goalDifference;
   }
 
   return 0;
@@ -1783,10 +1800,7 @@ function calculateGroupPredictionPoints(prediction, group) {
     return 0;
   }
 
-  const predictedQualified = [prediction.predictedFirst, prediction.predictedSecond].sort();
-  const actualQualified = [group.actualFirst, group.actualSecond].sort();
-
-  if (predictedQualified[0] === actualQualified[0] && predictedQualified[1] === actualQualified[1]) {
+  if (prediction.predictedFirst === group.actualFirst && prediction.predictedSecond === group.actualSecond) {
     if (isBestThirdBonusPrediction(prediction, group)) {
       return GROUP_SCORING.correctQualifiedTeams + GROUP_SCORING.thirdPlaceBonus;
     }
@@ -1982,10 +1996,6 @@ function getMatchHistoryStatus(prediction, match) {
     return { label: "Correct Result", className: "status-winner" };
   }
 
-  if (prediction.points === MATCH_SCORING.goalDifference) {
-    return { label: "Goal Difference", className: "status-margin" };
-  }
-
   return { label: "Wrong", className: "status-wrong" };
 }
 
@@ -1995,11 +2005,11 @@ function getGroupHistoryStatus(prediction, group) {
   }
 
   if (prediction.points === GROUP_SCORING.qualifiedTeamsWithThirdBonus) {
-    return { label: "Best Third Bonus", className: "status-exact" };
+    return { label: "Top Two + Best Third", className: "status-exact" };
   }
 
   if (prediction.points === GROUP_SCORING.correctQualifiedTeams) {
-    return { label: "Qualified Teams", className: "status-winner" };
+    return { label: "Top Two Order", className: "status-winner" };
   }
 
   return { label: "Wrong", className: "status-wrong" };
