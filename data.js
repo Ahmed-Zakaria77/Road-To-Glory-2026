@@ -98,7 +98,7 @@ const worldCupData = (() => {
   const knockoutMatches = generateKnockoutMatches(groupStageMatches.length + 1);
 
   return {
-    version: "wc2026-groups-a-to-l-v1",
+    version: "wc2026-groups-a-to-l-v2",
     groups,
     matches: [...groupStageMatches, ...knockoutMatches]
   };
@@ -106,13 +106,13 @@ const worldCupData = (() => {
   function generateGroupStageMatches(sourceGroups) {
     const matches = [];
     let matchId = 1;
-    const baseDate = new Date(2026, 5, 11, 13, 0, 0);
+    const baseDate = new Date(2026, 5, 11, 22, 0, 0);
 
     GROUP_STAGE_PAIRINGS.forEach((pairings, roundIndex) => {
       sourceGroups.forEach((group, groupIndex) => {
         const dayOffset = roundIndex * 6 + Math.floor(groupIndex / 2);
         const groupSlot = groupIndex % 2;
-        const kickoffHours = groupSlot === 0 ? [13, 16] : [19, 22];
+        const kickoffHours = groupSlot === 0 ? [22, 25] : [28, 31];
 
         pairings.forEach((pair, matchIndex) => {
           const matchDate = new Date(baseDate);
