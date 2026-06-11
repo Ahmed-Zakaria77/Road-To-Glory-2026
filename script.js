@@ -945,7 +945,8 @@ function renderSyncBanner() {
     return;
   }
 
-  dom.syncBanner.textContent = persistence.message;
+  dom.syncBanner.textContent = getPersistenceLabel(persistence.status);
+  dom.syncBanner.title = persistence.message;
   dom.syncBanner.className = `sync-banner sync-banner-${persistence.status}`;
 }
 
@@ -953,6 +954,16 @@ function setPersistenceStatus(status, message) {
   persistence.status = status;
   persistence.message = message;
   renderSyncBanner();
+}
+
+function getPersistenceLabel(status) {
+  if (status === "connected") {
+    return "Connected";
+  }
+  if (status === "disconnected") {
+    return "Offline";
+  }
+  return "Connecting";
 }
 
 function getSharedStorageUnavailableMessage() {
