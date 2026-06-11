@@ -5,13 +5,15 @@ const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_PASSWORD = "ziko97";
 
 const MATCH_SCORING = {
+  exactScore: 6,
   correctResult: 5,
   goalDifference: 1
 };
 
 const GROUP_SCORING = {
-  correctQualifiedTeams: 5,
-  correctOrder: 8
+  correctQualifiedTeams: 8,
+  thirdPlaceBonus: 2,
+  qualifiedTeamsWithThirdBonus: 10
 };
 
 const BEST_THIRD_QUALIFIERS_COUNT = 8;
@@ -1756,6 +1758,10 @@ function calculateMatchPredictionPoints(prediction, match) {
     return 0;
   }
 
+  if (isExactScore(prediction, match)) {
+    return MATCH_SCORING.exactScore;
+  }
+
   const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB);
   const predictedOutcome = getOutcome(prediction.predictedScoreA, prediction.predictedScoreB);
   const actualDifference = match.actualScoreA - match.actualScoreB;
@@ -1777,14 +1783,14 @@ function calculateGroupPredictionPoints(prediction, group) {
     return 0;
   }
 
-  if (isExactGroupStandingPrediction(prediction, group)) {
-    return GROUP_SCORING.correctOrder;
-  }
-
   const predictedQualified = [prediction.predictedFirst, prediction.predictedSecond].sort();
   const actualQualified = [group.actualFirst, group.actualSecond].sort();
 
   if (predictedQualified[0] === actualQualified[0] && predictedQualified[1] === actualQualified[1]) {
+    if (isBestThirdBonusPrediction(prediction, group)) {
+      return GROUP_SCORING.correctQualifiedTeams + GROUP_SCORING.thirdPlaceBonus;
+    }
+
     return GROUP_SCORING.correctQualifiedTeams;
   }
 
@@ -1988,8 +1994,8 @@ function getGroupHistoryStatus(prediction, group) {
     return { label: "Pending", className: "status-pending" };
   }
 
-  if (prediction.points === GROUP_SCORING.correctOrder) {
-    return { label: "Correct Order", className: "status-exact" };
+  if (prediction.points === GROUP_SCORING.qualifiedTeamsWithThirdBonus) {
+    return { label: "Best Third Bonus", className: "status-exact" };
   }
 
   if (prediction.points === GROUP_SCORING.correctQualifiedTeams) {
@@ -2502,10 +2508,8 @@ function isGroupResultReady(group) {
   return Boolean(group.actualFirst && group.actualSecond && group.actualThird);
 }
 
-function isExactGroupStandingPrediction(prediction, group) {
+function isBestThirdBonusPrediction(prediction, group) {
   return Boolean(
-    prediction.predictedFirst === group.actualFirst &&
-    prediction.predictedSecond === group.actualSecond &&
     prediction.predictedThird === group.actualThird &&
     Boolean(prediction.predictedThirdQualifies) === Boolean(group.actualThirdQualifies)
   );
