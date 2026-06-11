@@ -1241,10 +1241,6 @@ function renderMatchCard(match, player) {
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const prediction = player ? getMatchPrediction(player.id, match.id) : null;
   const isLocked = !isOpen || Boolean(prediction);
-  const submissions = state.matchPredictions
-    .filter((item) => String(item.matchId) === String(match.id))
-    .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
-    .slice(0, 4);
 
   const actualScore = match.actualScoreA !== null && match.actualScoreB !== null
     ? `${match.actualScoreA} - ${match.actualScoreB}`
@@ -1301,21 +1297,9 @@ function renderMatchCard(match, player) {
 
       ${prediction ? `
         <p class="prediction-meta">
-          ${escapeHtml(player.name)} - predicted at ${escapeHtml(formatDateTime(prediction.submittedAt))}
-          ${match.isFinished ? `- earned ${prediction.points} pts` : ""}
+          ${match.isFinished ? `Prediction submitted - earned ${prediction.points} pts` : "Prediction submitted"}
         </p>
       ` : `<p class="prediction-meta">No prediction saved for this player yet.</p>`}
-
-      <div>
-        <span class="card-kicker">Latest submissions</span>
-        <div class="mini-list">
-          ${submissions.length ? submissions.map((item) => `
-            <span class="mini-list-item">
-              ${escapeHtml(item.playerName)} - ${item.predictedScoreA}-${item.predictedScoreB} - predicted at ${escapeHtml(formatDateTime(item.submittedAt))}
-            </span>
-          `).join("") : `<span class="mini-list-item">No predictions yet.</span>`}
-        </div>
-      </div>
 
       ${!player ? `
         <div class="disabled-layer">
@@ -1349,10 +1333,6 @@ function renderGroupCard(group, player) {
   const isOpen = isPredictionOpen(group.predictionDeadline);
   const prediction = player ? getGroupPrediction(player.id, group.id) : null;
   const isLocked = !isOpen || Boolean(prediction);
-  const submissions = state.groupPredictions
-    .filter((item) => String(item.groupId) === String(group.id))
-    .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
-    .slice(0, 4);
 
   const optionMarkup = group.teams
     .map((team) => `<option value="${escapeHtml(team.name)}">${escapeHtml(team.name)}</option>`)
@@ -1410,7 +1390,7 @@ function renderGroupCard(group, player) {
 
       <p class="prediction-meta">
         ${prediction
-          ? `${escapeHtml(player.name)} - predicted at ${escapeHtml(formatDateTime(prediction.submittedAt))}${isGroupResultReady(group) ? ` - earned ${prediction.points} pts` : ""}`
+          ? `${isGroupResultReady(group) ? `Prediction submitted - earned ${prediction.points} pts` : "Prediction submitted"}`
           : "No prediction saved for this player yet."}
       </p>
 
@@ -1419,17 +1399,6 @@ function renderGroupCard(group, player) {
         <span class="chip">Actual 2nd: ${escapeHtml(group.actualSecond || "Pending")}</span>
         <span class="chip">Actual 3rd: ${escapeHtml(group.actualThird || "Pending")}</span>
         <span class="chip">Best third: ${group.actualThird === null ? "Pending" : group.actualThirdQualifies ? "Yes" : "No"}</span>
-      </div>
-
-      <div>
-        <span class="card-kicker">Latest submissions</span>
-        <div class="mini-list">
-          ${submissions.length ? submissions.map((item) => `
-            <span class="mini-list-item">
-              ${escapeHtml(item.playerName)} - ${escapeHtml(item.predictedFirst)} / ${escapeHtml(item.predictedSecond)} / ${escapeHtml(item.predictedThird || "-")} - best third: ${item.predictedThirdQualifies ? "Yes" : "No"} - predicted at ${escapeHtml(formatDateTime(item.submittedAt))}
-            </span>
-          `).join("") : `<span class="mini-list-item">No predictions yet.</span>`}
-        </div>
       </div>
 
       ${!player ? `
