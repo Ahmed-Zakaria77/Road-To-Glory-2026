@@ -1506,6 +1506,7 @@ function getRankBadgeClass(rank) {
 }
 
 function renderHistory() {
+  const activePlayer = getActivePlayer();
   const selectedPlayerId = dom.historyPlayerFilter.value;
   const isFilteredByPlayer = selectedPlayerId !== "all";
 
@@ -1523,6 +1524,7 @@ function renderHistory() {
       predictionText: `${prediction.predictedScoreA} - ${prediction.predictedScoreB}`,
       actualText: match.actualScoreA !== null && match.actualScoreB !== null ? `${match.actualScoreA} - ${match.actualScoreB}` : "Pending",
       points: prediction.points || 0,
+      isPublic: Boolean(match.isFinished && match.actualScoreA !== null && match.actualScoreB !== null),
       status: getMatchHistoryStatus(prediction, match)
     };
   });
@@ -1543,17 +1545,19 @@ function renderHistory() {
         ? `${group.actualFirst} / ${group.actualSecond} / ${group.actualThird} • Best third: ${group.actualThirdQualifies ? "Yes" : "No"}`
         : "Pending",
       points: prediction.points || 0,
+      isPublic: isGroupResultReady(group),
       status: getGroupHistoryStatus(prediction, group)
     };
   });
 
   const entries = [...matchEntries, ...groupEntries]
     .filter(Boolean)
+    .filter((entry) => entry.isPublic || entry.playerId === activePlayer?.id)
     .filter((entry) => !isFilteredByPlayer || entry.playerId === selectedPlayerId)
     .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
   if (!entries.length) {
-    dom.historyContainer.innerHTML = `<div class="empty-state">${isFilteredByPlayer ? "No prediction history for this player yet." : "No prediction history to show yet."}</div>`;
+    dom.historyContainer.innerHTML = `<div class="empty-state">${isFilteredByPlayer ? "No visible prediction history for this player yet." : "No visible prediction history to show yet."}</div>`;
     return;
   }
 
