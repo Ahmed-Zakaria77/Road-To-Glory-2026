@@ -549,10 +549,30 @@ function handleChange(event) {
 
   const groupForm = event.target.closest(".group-form");
   if (groupForm) {
+    if (event.target.matches('input[name="predictedThirdQualifies"]')) {
+      enforceBestThirdSelectionLimit(groupForm, event.target);
+    }
     if (event.target.matches('select[name="predictedFirst"], select[name="predictedSecond"], select[name="predictedThird"]')) {
       ensureUniqueGroupSelection(groupForm, event.target);
     }
     syncGroupFormState(groupForm);
+  }
+}
+
+function enforceBestThirdSelectionLimit(form, checkbox) {
+  if (!checkbox?.checked) {
+    return;
+  }
+
+  const player = getActivePlayer();
+  if (!player) {
+    return;
+  }
+
+  const groupId = String(form?.dataset.groupId || "");
+  if (countPlayerBestThirdSelections(player.id, groupId) >= BEST_THIRD_QUALIFIERS_COUNT) {
+    checkbox.checked = false;
+    showToast(`Maximum best third selections is ${BEST_THIRD_QUALIFIERS_COUNT} teams`, "error");
   }
 }
 
