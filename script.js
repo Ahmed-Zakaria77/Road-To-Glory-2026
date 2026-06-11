@@ -534,6 +534,44 @@ async function handleClick(event) {
     return;
   }
 
+  if (target.matches("[data-action='delete-player']")) {
+    const select = document.getElementById("adminPlayerDelete");
+    const playerId = String(select?.value || "");
+    if (!playerId) {
+      showToast("Select a player to delete", "error");
+      return;
+    }
+
+    const player = state.players.find((item) => item.id === playerId);
+    if (!player) {
+      showToast("Player not found", "error");
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete player ${player.name} and all of their predictions?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const result = await applySharedMutation((draftState) => {
+      draftState.players = draftState.players.filter((item) => item.id !== playerId);
+      draftState.matchPredictions = draftState.matchPredictions.filter((item) => item.playerId !== playerId);
+      draftState.groupPredictions = draftState.groupPredictions.filter((item) => item.playerId !== playerId);
+    });
+    if (!result.ok) {
+      return;
+    }
+
+    if (sessionState.activePlayerId === playerId) {
+      sessionState.activePlayerId = "";
+      saveSessionState();
+    }
+
+    renderAll();
+    showToast("Player deleted", "success");
+    return;
+  }
+
   if (target.matches("[data-action='lock-admin']")) {
     sessionState.adminUnlocked = false;
     saveSessionState();
@@ -1607,6 +1645,20 @@ function renderAdmin() {
         <button class="secondary-button" type="button" data-action="export-leaderboard">Export Leaderboard JSON</button>
         <button class="ghost-button" type="button" data-action="lock-admin">Lock Admin</button>
         <button class="ghost-button" type="button" data-action="reset-data">Reset All Data</button>
+      </div>
+      <div class="admin-actions">
+        <label class="field-group" for="adminPlayerDelete">
+          <span>Delete player</span>
+          <select id="adminPlayerDelete">
+            <option value="">Select player</option>
+            ${state.players
+              .slice()
+              .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)))
+              .map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <button class="ghost-button" type="button" data-action="delete-player">Delete Player</button>
       </div>
       <div>
         <label class="field-label" for="importMatchesInput">Import matches JSON</label>
