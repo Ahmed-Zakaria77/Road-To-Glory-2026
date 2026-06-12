@@ -167,7 +167,11 @@ function normalizeStoredState(parsed) {
   const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
   if (!scheduleChanged) {
     baseState.groups = Array.isArray(parsed.groups) && parsed.groups.length
-      ? parsed.groups.map((group) => normalizeGroup(group, scheduleSource.groupLookup))
+      ? parsed.groups.map((group) => normalizeGroup(
+        group,
+        scheduleSource.groupLookup,
+        scheduleSource.groupDefaults[String(group?.id || "").trim()] || null
+      ))
       : scheduleSource.groups.map(cloneObject);
     baseState.matches = Array.isArray(parsed.matches) && parsed.matches.length
       ? parsed.matches.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup))
@@ -2322,6 +2326,7 @@ function syncGroupPredictionDeadlines(groups, matches) {
 function normalizeWorldCupData(data) {
   const groups = Array.isArray(data.groups) ? data.groups.map((group) => normalizeGroup(group)) : [];
   const groupLookup = buildTeamLookup(groups);
+  const groupDefaults = buildGroupDefaults(groups);
   const matchesSource = Array.isArray(data.matches) && data.matches.length
     ? data.matches
     : [];
@@ -2333,17 +2338,19 @@ function normalizeWorldCupData(data) {
     version: String(data.version || "wc2026-default-schedule"),
     groups,
     matches,
-    groupLookup
+    groupLookup,
+    groupDefaults
   };
 }
 
-function normalizeGroup(group, lookup) {
+function normalizeGroup(group, lookup, defaultGroup = null) {
   const id = String(group.id || "").trim();
   const teams = Array.isArray(group.teams) ? group.teams.map((team) => ({
     id: String(team.id || slugifyTeamName(team.name || "")),
     name: String(team.name || ""),
     logo: resolveTeamLogo(team.logo, lookup?.[normalizeName(team.name)]?.logo || "")
   })) : [];
+  const hasScheduleLevelGroupDeadline = Boolean(defaultGroup?.predictionDeadline);
 
   const normalizedGroup = {
     id,
@@ -2354,7 +2361,9 @@ function normalizeGroup(group, lookup) {
     actualSecond: group.actualSecond || null,
     actualThird: group.actualThird || null,
     actualThirdQualifies: typeof group.actualThirdQualifies === "boolean" ? group.actualThirdQualifies : null,
-    autoPredictionDeadline: !group.predictionDeadline
+    autoPredictionDeadline: hasScheduleLevelGroupDeadline
+      ? Boolean(group.autoPredictionDeadline)
+      : true
   };
 
   if (lookup && normalizedGroup.teams.length === 0) {
@@ -2410,6 +2419,15 @@ function buildTeamLookup(groups) {
         groupId: group.id
       };
     });
+    return lookup;
+  }, {});
+}
+
+function buildGroupDefaults(groups) {
+  return groups.reduce((lookup, group) => {
+    lookup[String(group.id)] = {
+      predictionDeadline: group.predictionDeadline ? String(group.predictionDeadline) : null
+    };
     return lookup;
   }, {});
 }
