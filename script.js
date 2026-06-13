@@ -65,7 +65,9 @@ const dom = {
 const uiState = {
   leaderboardFlashUntil: 0,
   timerId: null,
-  syncTimerId: null
+  syncTimerId: null,
+  historyFilterManuallyChanged: false,
+  historyFilterPlayerContextId: ""
 };
 
 const persistence = {
@@ -445,7 +447,11 @@ function bindEvents() {
   dom.groupFilter.addEventListener("change", renderMatches);
   dom.statusFilter.addEventListener("change", renderMatches);
   dom.playerSearchInput.addEventListener("input", renderLeaderboard);
-  dom.historyPlayerFilter.addEventListener("change", renderHistory);
+  dom.historyPlayerFilter.addEventListener("change", () => {
+    uiState.historyFilterManuallyChanged = true;
+    uiState.historyFilterPlayerContextId = String(sessionState.activePlayerId || "");
+    renderHistory();
+  });
 
   document.addEventListener("submit", (event) => {
     void handleSubmit(event);
@@ -1250,7 +1256,7 @@ function normalizeRemoteStorageConfig(config) {
 function renderMatches() {
   const player = getActivePlayer();
   const filters = getMatchFilters();
-  const matches = state.matches
+  const filteredMatches = state.matches
     .slice()
     .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate))
     .filter((match) => {
@@ -1261,6 +1267,8 @@ function renderMatches() {
       const statusMatch = filters.status === "all" || status === filters.status;
       return roundMatch && groupMatch && statusMatch;
     });
+
+  const matches = sortMatchesForDisplay(filteredMatches, player);
 
   if (!matches.length) {
     dom.matchesContainer.innerHTML = `<div class="empty-state">No matches fit the current filters.</div>`;
@@ -1611,18 +1619,28 @@ function renderHistory() {
 }
 
 function renderHistoryPlayerFilter() {
-  const previousValue = dom.historyPlayerFilter.value || "all";
+  const previousValue = dom.historyPlayerFilter.value || "";
   const players = state.players
     .slice()
     .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)));
+  const activePlayerId = String(sessionState.activePlayerId || "");
+  const isValidPreviousValue = previousValue === "all" || players.some((player) => player.id === previousValue);
+  const defaultValue = activePlayerId && players.some((player) => player.id === activePlayerId)
+    ? activePlayerId
+    : "all";
+  const playerContextChanged = uiState.historyFilterPlayerContextId !== activePlayerId;
+  const shouldResetToDefault = !uiState.historyFilterManuallyChanged || playerContextChanged || !isValidPreviousValue;
 
   dom.historyPlayerFilter.innerHTML = [
     `<option value="all">All players</option>`,
     ...players.map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`)
   ].join("");
 
-  const hasPreviousValue = previousValue === "all" || players.some((player) => player.id === previousValue);
-  dom.historyPlayerFilter.value = hasPreviousValue ? previousValue : "all";
+  dom.historyPlayerFilter.value = shouldResetToDefault ? defaultValue : previousValue;
+  uiState.historyFilterPlayerContextId = activePlayerId;
+  if (shouldResetToDefault) {
+    uiState.historyFilterManuallyChanged = false;
+  }
 }
 
 function renderAdmin() {
@@ -1949,6 +1967,43 @@ function getCurrentRoundOptionValue() {
     return currentRound;
   }
   return "all";
+}
+
+function sortMatchesForDisplay(matches, player) {
+  const priorityMatchDay = getPriorityMatchDay(matches, player);
+  if (!priorityMatchDay) {
+    return matches;
+  }
+
+  return matches.slice().sort((a, b) => {
+    const aPriority = getMatchDayKey(a.matchDate) === priorityMatchDay ? 0 : 1;
+    const bPriority = getMatchDayKey(b.matchDate) === priorityMatchDay ? 0 : 1;
+    if (aPriority !== bPriority) {
+      return aPriority - bPriority;
+    }
+    return new Date(a.matchDate) - new Date(b.matchDate);
+  });
+}
+
+function getPriorityMatchDay(matches, player) {
+  const predictedMatchIds = player
+    ? new Set(
+      state.matchPredictions
+        .filter((prediction) => prediction.playerId === player.id)
+        .map((prediction) => String(prediction.matchId))
+    )
+    : new Set();
+
+  const candidateGroups = [
+    matches.filter((match) => isPredictionOpen(match.predictionDeadline) && !predictedMatchIds.has(String(match.id))),
+    matches.filter((match) => isPredictionOpen(match.predictionDeadline)),
+    matches.filter((match) => !match.isFinished)
+  ];
+
+  const priorityMatch = candidateGroups
+    .find((group) => group.length)?.[0] || null;
+
+  return priorityMatch ? getMatchDayKey(priorityMatch.matchDate) : null;
 }
 
 function startCountdownLoop() {
@@ -2526,6 +2581,14 @@ function toIsoLocalString(date) {
 
 function padNumber(value) {
   return String(value).padStart(2, "0");
+}
+
+function getMatchDayKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return `${date.getFullYear()}-${padNumber(date.getMonth() + 1)}-${padNumber(date.getDate())}`;
 }
 
 function formatCountdown(deadline) {
