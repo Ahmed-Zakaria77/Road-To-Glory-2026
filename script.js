@@ -30,6 +30,10 @@ const ROUND_FILTER_OPTIONS = [
   { value: "Final", label: "Final" }
 ];
 
+const ROUND_THEME_MAP = {
+  "Group Stage - Round 2": "round-2"
+};
+
 const scheduleSource = normalizeWorldCupData(
   typeof worldCupData !== "undefined" ? worldCupData : (globalThis.worldCupData || {})
 );
@@ -48,6 +52,7 @@ const dom = {
   heroLogoRail: document.getElementById("heroLogoRail"),
   roundFilter: document.getElementById("roundFilter"),
   groupFilter: document.getElementById("groupFilter"),
+  teamFilter: document.getElementById("teamFilter"),
   statusFilter: document.getElementById("statusFilter"),
   matchesContainer: document.getElementById("matchesContainer"),
   groupsContainer: document.getElementById("groupsContainer"),
@@ -56,6 +61,12 @@ const dom = {
   leaderboardBody: document.getElementById("leaderboardBody"),
   historyPlayerFilter: document.getElementById("historyPlayerFilter"),
   historyContainer: document.getElementById("historyContainer"),
+  notificationShell: document.getElementById("notificationShell"),
+  notificationButton: document.getElementById("notificationButton"),
+  notificationBadge: document.getElementById("notificationBadge"),
+  notificationPanel: document.getElementById("notificationPanel"),
+  notificationMeta: document.getElementById("notificationMeta"),
+  notificationList: document.getElementById("notificationList"),
   adminGate: document.getElementById("adminGate"),
   adminWorkspace: document.getElementById("adminWorkspace"),
   toastStack: document.getElementById("toastStack"),
@@ -66,8 +77,10 @@ const uiState = {
   leaderboardFlashUntil: 0,
   timerId: null,
   syncTimerId: null,
+  notificationsOpen: false,
   historyFilterManuallyChanged: false,
-  historyFilterPlayerContextId: ""
+  historyFilterPlayerContextId: "",
+  adminRoundFilter: ""
 };
 
 const persistence = {
@@ -137,7 +150,9 @@ function loadSessionState() {
     const parsed = JSON.parse(raw);
     return {
       activePlayerId: String(parsed?.activePlayerId || ""),
-      adminUnlocked: Boolean(parsed?.adminUnlocked)
+      adminUnlocked: Boolean(parsed?.adminUnlocked),
+      notificationReadByPlayer: normalizeNotificationReadByPlayer(parsed?.notificationReadByPlayer),
+      rankTrackingByPlayer: normalizeRankTrackingByPlayer(parsed?.rankTrackingByPlayer)
     };
   } catch (error) {
     console.warn("Could not load the local session. Resetting to defaults.", error);
@@ -148,8 +163,65 @@ function loadSessionState() {
 function createDefaultSessionState() {
   return {
     activePlayerId: "",
-    adminUnlocked: false
+    adminUnlocked: false,
+    notificationReadByPlayer: {},
+    rankTrackingByPlayer: {}
   };
+}
+
+function normalizeNotificationReadByPlayer(rawValue) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawValue).map(([playerId, value]) => [
+      String(playerId),
+      Array.isArray(value)
+        ? [...new Set(value.map((entryId) => String(entryId || "")).filter(Boolean))]
+        : []
+    ])
+  );
+}
+
+function normalizeRankTrackingByPlayer(rawValue) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawValue).map(([playerId, value]) => [
+      String(playerId),
+      {
+        lastKnownRank: normalizeRankNumber(value?.lastKnownRank),
+        latestChange: normalizeRankChangeEntry(value?.latestChange)
+      }
+    ])
+  );
+}
+
+function normalizeRankChangeEntry(rawValue) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return null;
+  }
+
+  const id = String(rawValue.id || "").trim();
+  const detectedAt = String(rawValue.detectedAt || "").trim();
+  if (!id || !detectedAt) {
+    return null;
+  }
+
+  return {
+    id,
+    fromRank: normalizeRankNumber(rawValue.fromRank),
+    toRank: normalizeRankNumber(rawValue.toRank),
+    detectedAt
+  };
+}
+
+function normalizeRankNumber(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 function saveSessionState() {
@@ -167,22 +239,86 @@ function normalizeStoredState(parsed) {
   };
 
   const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
-  if (!scheduleChanged) {
-    baseState.groups = Array.isArray(parsed.groups) && parsed.groups.length
-      ? parsed.groups.map((group) => normalizeGroup(
-        group,
-        scheduleSource.groupLookup,
-        scheduleSource.groupDefaults[String(group?.id || "").trim()] || null
-      ))
-      : scheduleSource.groups.map(cloneObject);
-    baseState.matches = Array.isArray(parsed.matches) && parsed.matches.length
-      ? parsed.matches.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup))
-      : scheduleSource.matches.map(cloneObject);
-  }
+  baseState.groups = Array.isArray(parsed.groups) && parsed.groups.length
+    ? (
+      scheduleChanged
+        ? mergeStoredGroupsWithSchedule(parsed.groups)
+        : parsed.groups.map((group) => normalizeGroup(
+          group,
+          scheduleSource.groupLookup,
+          scheduleSource.groupDefaults[String(group?.id || "").trim()] || null
+        ))
+    )
+    : scheduleSource.groups.map(cloneObject);
+  baseState.matches = Array.isArray(parsed.matches) && parsed.matches.length
+    ? (
+      scheduleChanged
+        ? mergeStoredMatchesWithSchedule(parsed.matches)
+        : parsed.matches.map((match, index) => normalizeMatch(match, index, scheduleSource.groupLookup))
+    )
+    : scheduleSource.matches.map(cloneObject);
 
   syncGroupPredictionDeadlines(baseState.groups, baseState.matches);
   reconcilePredictions(baseState);
   return baseState;
+}
+
+function mergeStoredGroupsWithSchedule(storedGroups) {
+  const storedGroupsById = new Map(
+    storedGroups.map((group) => [String(group?.id || "").trim(), group])
+  );
+
+  return scheduleSource.groups.map((defaultGroup) => {
+    const storedGroup = storedGroupsById.get(String(defaultGroup.id)) || null;
+    if (!storedGroup) {
+      return cloneObject(defaultGroup);
+    }
+
+    return normalizeGroup(
+      {
+        ...defaultGroup,
+        ...storedGroup,
+        id: defaultGroup.id,
+        name: defaultGroup.name,
+        teams: defaultGroup.teams.map(cloneObject),
+        predictionDeadline: storedGroup.predictionDeadline ?? defaultGroup.predictionDeadline,
+        actualFirst: storedGroup.actualFirst ?? defaultGroup.actualFirst,
+        actualSecond: storedGroup.actualSecond ?? defaultGroup.actualSecond,
+        actualThird: storedGroup.actualThird ?? defaultGroup.actualThird,
+        actualThirdQualifies: typeof storedGroup.actualThirdQualifies === "boolean"
+          ? storedGroup.actualThirdQualifies
+          : defaultGroup.actualThirdQualifies
+      },
+      scheduleSource.groupLookup,
+      scheduleSource.groupDefaults[String(defaultGroup.id)] || null
+    );
+  });
+}
+
+function mergeStoredMatchesWithSchedule(storedMatches) {
+  const storedMatchesById = new Map(
+    storedMatches.map((match) => [String(match?.id || "").trim(), match])
+  );
+
+  return scheduleSource.matches.map((defaultMatch, index) => {
+    const storedMatch = storedMatchesById.get(String(defaultMatch.id)) || null;
+    if (!storedMatch) {
+      return cloneObject(defaultMatch);
+    }
+
+    return normalizeMatch(
+      {
+        ...defaultMatch,
+        actualScoreA: storedMatch.actualScoreA ?? defaultMatch.actualScoreA,
+        actualScoreB: storedMatch.actualScoreB ?? defaultMatch.actualScoreB,
+        isFinished: Boolean(storedMatch.isFinished),
+        teamALogo: storedMatch.teamALogo || defaultMatch.teamALogo,
+        teamBLogo: storedMatch.teamBLogo || defaultMatch.teamBLogo
+      },
+      index,
+      scheduleSource.groupLookup
+    );
+  });
 }
 
 function reconcilePredictions(nextState) {
@@ -214,6 +350,25 @@ function reconcileSessionState() {
   if (!validPlayerIds.has(sessionState.activePlayerId)) {
     sessionState.activePlayerId = "";
   }
+
+  if (!sessionState.notificationReadByPlayer || typeof sessionState.notificationReadByPlayer !== "object") {
+    sessionState.notificationReadByPlayer = {};
+  }
+  if (!sessionState.rankTrackingByPlayer || typeof sessionState.rankTrackingByPlayer !== "object") {
+    sessionState.rankTrackingByPlayer = {};
+  }
+
+  Object.keys(sessionState.notificationReadByPlayer).forEach((playerId) => {
+    if (!validPlayerIds.has(playerId)) {
+      delete sessionState.notificationReadByPlayer[playerId];
+    }
+  });
+  Object.keys(sessionState.rankTrackingByPlayer).forEach((playerId) => {
+    if (!validPlayerIds.has(playerId)) {
+      delete sessionState.rankTrackingByPlayer[playerId];
+    }
+  });
+
   saveSessionState();
 }
 
@@ -443,9 +598,10 @@ function bindEvents() {
     document.getElementById(targetId).scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
-  dom.roundFilter.addEventListener("change", renderMatches);
-  dom.groupFilter.addEventListener("change", renderMatches);
-  dom.statusFilter.addEventListener("change", renderMatches);
+  dom.roundFilter.addEventListener("change", handleMatchFilterChange);
+  dom.groupFilter.addEventListener("change", handleMatchFilterChange);
+  dom.teamFilter.addEventListener("change", handleMatchFilterChange);
+  dom.statusFilter.addEventListener("change", handleMatchFilterChange);
   dom.playerSearchInput.addEventListener("input", renderLeaderboard);
   dom.historyPlayerFilter.addEventListener("change", () => {
     uiState.historyFilterManuallyChanged = true;
@@ -460,6 +616,12 @@ function bindEvents() {
     void handleClick(event);
   });
   document.addEventListener("change", handleChange);
+  document.addEventListener("keydown", handleKeydown);
+}
+
+function handleMatchFilterChange() {
+  applyRoundTheme();
+  renderMatches();
 }
 
 async function handleSubmit(event) {
@@ -503,8 +665,25 @@ async function handleSubmit(event) {
 
 async function handleClick(event) {
   const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
 
-  if (target.matches("[data-action='calculate-points']")) {
+  if (target.closest("[data-action='toggle-notifications']")) {
+    toggleNotifications();
+    return;
+  }
+
+  if (uiState.notificationsOpen && !target.closest(".notification-shell")) {
+    closeNotifications();
+  }
+
+  const actionTarget = target.closest("[data-action]");
+  if (!actionTarget) {
+    return;
+  }
+
+  if (actionTarget.matches("[data-action='calculate-points']")) {
     recalculatePoints();
     uiState.leaderboardFlashUntil = Date.now() + 1500;
     renderAll();
@@ -512,7 +691,7 @@ async function handleClick(event) {
     return;
   }
 
-  if (target.matches("[data-action='reset-data']")) {
+  if (actionTarget.matches("[data-action='reset-data']")) {
     const confirmed = window.confirm("Reset all players, predictions, and results?");
     if (!confirmed) {
       return;
@@ -539,12 +718,12 @@ async function handleClick(event) {
     return;
   }
 
-  if (target.matches("[data-action='export-leaderboard']")) {
+  if (actionTarget.matches("[data-action='export-leaderboard']")) {
     exportLeaderboard();
     return;
   }
 
-  if (target.matches("[data-action='delete-player']")) {
+  if (actionTarget.matches("[data-action='delete-player']")) {
     const select = document.getElementById("adminPlayerDelete");
     const playerId = String(select?.value || "");
     if (!playerId) {
@@ -582,16 +761,28 @@ async function handleClick(event) {
     return;
   }
 
-  if (target.matches("[data-action='lock-admin']")) {
+  if (actionTarget.matches("[data-action='lock-admin']")) {
     sessionState.adminUnlocked = false;
     saveSessionState();
     renderAdmin();
   }
 }
 
+function handleKeydown(event) {
+  if (event.key === "Escape" && uiState.notificationsOpen) {
+    closeNotifications();
+  }
+}
+
 function handleChange(event) {
   if (event.target.id === "importMatchesInput") {
     void importMatchesFromFile(event.target.files?.[0]);
+    return;
+  }
+
+  if (event.target.id === "adminRoundFilter") {
+    uiState.adminRoundFilter = String(event.target.value || "all");
+    renderAdmin();
     return;
   }
 
@@ -962,8 +1153,10 @@ async function handleAdminGroupUpdate(form) {
 }
 
 function renderAll() {
+  applyRoundTheme();
   renderStats();
   renderWelcomeCard();
+  renderNotifications();
   renderMatches();
   renderGroups();
   renderLeaderboard();
@@ -1006,6 +1199,73 @@ function renderWelcomeCard() {
   `;
   dom.loginPanel?.classList.add("is-logged-in");
   dom.loginForm?.classList.add("is-collapsed");
+}
+
+function renderNotifications() {
+  if (!dom.notificationButton || !dom.notificationPanel || !dom.notificationList || !dom.notificationMeta) {
+    return;
+  }
+
+  const player = getActivePlayer();
+  const entries = player ? getPlayerNotificationEntries(player.id) : [];
+  const urgentEntries = entries.filter((entry) => entry.persistent);
+  const hasUrgentReminders = urgentEntries.length > 0;
+
+  if (player && uiState.notificationsOpen) {
+    markPlayerNotificationsAsRead(
+      player.id,
+      entries.filter((entry) => !entry.persistent).map((entry) => entry.id)
+    );
+  }
+
+  const unreadIds = player ? getUnreadNotificationIds(player.id, entries) : new Set();
+  const unreadCount = unreadIds.size;
+
+  dom.notificationButton.setAttribute("aria-expanded", String(uiState.notificationsOpen));
+  dom.notificationButton.classList.toggle("is-urgent", hasUrgentReminders);
+  dom.notificationBadge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  dom.notificationBadge.classList.toggle("hidden", unreadCount === 0);
+  dom.notificationPanel.classList.toggle("hidden", !uiState.notificationsOpen);
+
+  if (!player) {
+    dom.notificationMeta.textContent = "Sign in to see match reminders and rank updates.";
+    dom.notificationList.innerHTML = `
+      <div class="notification-empty">
+        Log in with your player name first, then open the bell to see match reminders and leaderboard changes.
+      </div>
+    `;
+    return;
+  }
+
+  dom.notificationMeta.textContent = hasUrgentReminders
+    ? `${urgentEntries.length} match${urgentEntries.length === 1 ? "" : "es"} today still need your prediction`
+    : entries.length
+      ? `${entries.length} update${entries.length === 1 ? "" : "s"} for ${player.name}`
+      : `No reminders or rank updates yet for ${player.name}`;
+
+  if (!entries.length) {
+    dom.notificationList.innerHTML = `
+      <div class="notification-empty">
+        Your notifications will appear here when you have a same-day match reminder or a leaderboard rank change.
+      </div>
+    `;
+    return;
+  }
+
+  dom.notificationList.innerHTML = entries.map((entry) => `
+    <article class="notification-item ${unreadIds.has(entry.id) ? "is-unread" : ""} ${entry.persistent ? "is-reminder" : ""}">
+      <div class="notification-item-topline">
+        <strong class="notification-item-title">${escapeHtml(entry.title)}</strong>
+      </div>
+      <div class="notification-item-subline">
+        <span class="status-tag ${entry.status.className}">${escapeHtml(entry.status.label)}</span>
+        <span class="chip">${escapeHtml(entry.context)}</span>
+      </div>
+      <p class="notification-item-copy">${escapeHtml(entry.summary)}</p>
+      <p class="notification-item-copy">${escapeHtml(entry.actual)}</p>
+      <div class="notification-item-time">${escapeHtml(entry.timeLabel || "Updated")}: ${escapeHtml(formatDateTime(entry.resolvedAt))}</div>
+    </article>
+  `).join("");
 }
 
 function renderSyncBanner() {
@@ -1264,8 +1524,11 @@ function renderMatches() {
       const status = isOpen ? "open" : "closed";
       const roundMatch = filters.round === "all" || match.round === filters.round;
       const groupMatch = filters.group === "all" || getMatchGroupLabel(match) === filters.group;
+      const teamMatch = filters.team === "all"
+        || normalizeName(match.teamA) === filters.team
+        || normalizeName(match.teamB) === filters.team;
       const statusMatch = filters.status === "all" || status === filters.status;
-      return roundMatch && groupMatch && statusMatch;
+      return roundMatch && groupMatch && teamMatch && statusMatch;
     });
 
   const matches = sortMatchesForDisplay(filteredMatches, player);
@@ -1278,18 +1541,6 @@ function renderMatches() {
   const groupedByRound = groupBy(matches, (match) => match.round);
   const roundMarkup = Object.keys(groupedByRound).map((roundName) => {
     const roundMatches = groupedByRound[roundName];
-    const groupedByGroup = groupBy(roundMatches, (match) => isGroupStageRound(roundName) ? `Group ${match.group}` : "Knockout");
-    const groupMarkup = Object.keys(groupedByGroup).map((groupName) => `
-      <div class="round-group-block">
-        <div class="round-group-header">
-          <span class="card-kicker">${escapeHtml(groupName)}</span>
-          <span class="muted">${groupedByGroup[groupName].length} match${groupedByGroup[groupName].length === 1 ? "" : "es"}</span>
-        </div>
-        <div class="cards-grid match-grid">
-          ${groupedByGroup[groupName].map((match) => renderMatchCard(match, player)).join("")}
-        </div>
-      </div>
-    `).join("");
 
     return `
       <section class="round-section panel">
@@ -1297,8 +1548,8 @@ function renderMatches() {
           <h3>${escapeHtml(roundName)}</h3>
           <span class="chip">${roundMatches.length} match${roundMatches.length === 1 ? "" : "es"}</span>
         </div>
-        <div class="round-group-stack">
-          ${groupMarkup}
+        <div class="cards-grid match-grid">
+          ${roundMatches.map((match) => renderMatchCard(match, player)).join("")}
         </div>
       </section>
     `;
@@ -1610,7 +1861,7 @@ function renderHistory() {
           Submitted at: ${escapeHtml(formatDateTime(entry.submittedAt))}
         </p>
       </div>
-      <div>
+      <div class="history-outcome">
         <span class="status-tag ${entry.status.className}">${escapeHtml(entry.status.label)}</span>
         <div class="history-points">${entry.points} pts</div>
       </div>
@@ -1643,6 +1894,186 @@ function renderHistoryPlayerFilter() {
   }
 }
 
+function toggleNotifications() {
+  uiState.notificationsOpen = !uiState.notificationsOpen;
+  renderNotifications();
+}
+
+function closeNotifications() {
+  if (!uiState.notificationsOpen) {
+    return;
+  }
+
+  uiState.notificationsOpen = false;
+  renderNotifications();
+}
+
+function getPlayerNotificationEntries(playerId, sourceState = state) {
+  const reminderEntries = getTodayPredictionReminderEntries(playerId, sourceState);
+  const rankChangeEntry = getRankChangeNotificationEntry(playerId, sourceState);
+
+  return [rankChangeEntry, ...reminderEntries]
+    .filter(Boolean)
+    .sort((a, b) => {
+      const aPriority = Number(a.sortPriority || 0);
+      const bPriority = Number(b.sortPriority || 0);
+      if (aPriority !== bPriority) {
+        return bPriority - aPriority;
+      }
+
+      if (a.persistent && b.persistent) {
+        return new Date(a.resolvedAt) - new Date(b.resolvedAt);
+      }
+
+      return new Date(b.resolvedAt) - new Date(a.resolvedAt);
+    });
+}
+
+function getTodayPredictionReminderEntries(playerId, sourceState = state) {
+  const todayKey = getMatchDayKey(new Date());
+
+  return sourceState.matches
+    .filter((match) => (
+      getMatchDayKey(match.matchDate) === todayKey &&
+      !match.isFinished &&
+      isPredictionOpen(match.predictionDeadline) &&
+      !getMatchPrediction(playerId, match.id, sourceState)
+    ))
+    .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate))
+    .map((match) => ({
+      id: ["reminder", "today", getMatchDayKey(match.matchDate), String(match.id)].join(":"),
+      resolvedAt: match.matchDate,
+      title: `Prediction missing: ${match.teamA} vs ${match.teamB}`,
+      context: `${match.round} • ${getMatchGroupLabel(match)}`,
+      summary: "This match is today and you have not submitted your prediction yet.",
+      actual: `Deadline: ${formatDateTime(match.predictionDeadline)}`,
+      status: {
+        label: "Prediction needed",
+        className: "status-reminder"
+      },
+      timeLabel: "Kickoff",
+      persistent: true,
+      sortPriority: 3
+    }));
+}
+
+function getRankChangeNotificationEntry(playerId, sourceState = state) {
+  const tracker = syncPlayerRankTracking(playerId, sourceState);
+  const change = tracker?.latestChange;
+  if (!change || change.fromRank === change.toRank) {
+    return null;
+  }
+
+  const movedUp = change.fromRank !== null && change.toRank !== null && change.toRank < change.fromRank;
+  const directionLabel = movedUp ? "Rank improved" : "Rank dropped";
+  const movementCount = change.fromRank !== null && change.toRank !== null
+    ? Math.abs(change.fromRank - change.toRank)
+    : 0;
+
+  return {
+    id: change.id,
+    resolvedAt: change.detectedAt,
+    title: movedUp
+      ? `You moved up to #${change.toRank}`
+      : `You dropped to #${change.toRank}`,
+    context: "Leaderboard",
+    summary: movedUp
+      ? `You climbed ${movementCount} place${movementCount === 1 ? "" : "s"} from #${change.fromRank} to #${change.toRank}.`
+      : `You fell ${movementCount} place${movementCount === 1 ? "" : "s"} from #${change.fromRank} to #${change.toRank}.`,
+    actual: `Current rank: #${change.toRank}`,
+    status: {
+      label: directionLabel,
+      className: movedUp ? "status-rank-up" : "status-rank-down"
+    },
+    timeLabel: "Detected",
+    sortPriority: 2
+  };
+}
+
+function syncPlayerRankTracking(playerId, sourceState = state) {
+  if (!playerId) {
+    return null;
+  }
+
+  if (!sessionState.rankTrackingByPlayer || typeof sessionState.rankTrackingByPlayer !== "object") {
+    sessionState.rankTrackingByPlayer = {};
+  }
+
+  const currentRank = getPlayerRank(playerId, sourceState);
+  const existingTracker = sessionState.rankTrackingByPlayer[playerId] || {
+    lastKnownRank: null,
+    latestChange: null
+  };
+
+  let shouldSave = false;
+  const nextTracker = {
+    lastKnownRank: normalizeRankNumber(existingTracker.lastKnownRank),
+    latestChange: normalizeRankChangeEntry(existingTracker.latestChange)
+  };
+
+  if (nextTracker.lastKnownRank === null && currentRank !== null) {
+    nextTracker.lastKnownRank = currentRank;
+    shouldSave = true;
+  } else if (currentRank !== null && nextTracker.lastKnownRank !== currentRank) {
+    nextTracker.latestChange = {
+      id: [
+        "rank",
+        String(playerId),
+        String(nextTracker.lastKnownRank || "unranked"),
+        String(currentRank),
+        String(Date.now())
+      ].join(":"),
+      fromRank: nextTracker.lastKnownRank,
+      toRank: currentRank,
+      detectedAt: new Date().toISOString()
+    };
+    nextTracker.lastKnownRank = currentRank;
+    shouldSave = true;
+  }
+
+  if (shouldSave) {
+    sessionState.rankTrackingByPlayer[playerId] = nextTracker;
+    saveSessionState();
+  }
+
+  return sessionState.rankTrackingByPlayer[playerId] || nextTracker;
+}
+
+function getUnreadNotificationIds(playerId, entries) {
+  const readIds = new Set(sessionState.notificationReadByPlayer?.[playerId] || []);
+  return new Set(
+    entries
+      .filter((entry) => entry.persistent || !readIds.has(entry.id))
+      .map((entry) => entry.id)
+  );
+}
+
+function markPlayerNotificationsAsRead(playerId, entryIds) {
+  if (!playerId) {
+    return;
+  }
+
+  const nextIds = [...new Set(entryIds.map((entryId) => String(entryId || "")).filter(Boolean))];
+  const currentIds = Array.isArray(sessionState.notificationReadByPlayer?.[playerId])
+    ? sessionState.notificationReadByPlayer[playerId]
+    : [];
+
+  if (currentIds.length === nextIds.length && currentIds.every((entryId, index) => entryId === nextIds[index])) {
+    return;
+  }
+
+  sessionState.notificationReadByPlayer[playerId] = nextIds;
+  saveSessionState();
+}
+
+function getGroupResultTimestamp(group, sourceState = state) {
+  const latestGroupMatch = sourceState.matches
+    .filter((match) => String(match.group) === String(group.id) && isGroupStageRound(match.round))
+    .sort((a, b) => new Date(b.matchDate) - new Date(a.matchDate))[0];
+
+  return latestGroupMatch?.matchDate || group.predictionDeadline || new Date().toISOString();
+}
+
 function renderAdmin() {
   if (!sessionState.adminUnlocked) {
     dom.adminGate.innerHTML = `
@@ -1660,41 +2091,89 @@ function renderAdmin() {
     return;
   }
 
+  const availableAdminRounds = ROUND_FILTER_OPTIONS
+    .filter((option) => option.value !== "all")
+    .filter((option) => state.matches.some((match) => match.round === option.value));
+  const selectedAdminRound = getAdminRoundFilterValue(availableAdminRounds);
+  const filteredMatches = state.matches
+    .filter((match) => selectedAdminRound === "all" || match.round === selectedAdminRound)
+    .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate));
+  const filteredOpenMatches = filteredMatches.filter((match) => isPredictionOpen(match.predictionDeadline)).length;
+  const filteredFinishedMatches = filteredMatches.filter((match) => match.isFinished).length;
+  const shouldShowGroupsSection = selectedAdminRound === "all" || isGroupStageRound(selectedAdminRound);
+
   dom.adminGate.innerHTML = `
     <div class="admin-controls">
-      <div class="admin-actions">
-        <button class="primary-button" type="button" data-action="calculate-points">Calculate Points</button>
-        <button class="secondary-button" type="button" data-action="export-leaderboard">Export Leaderboard JSON</button>
-        <button class="ghost-button" type="button" data-action="lock-admin">Lock Admin</button>
-        <button class="ghost-button" type="button" data-action="reset-data">Reset All Data</button>
+      <div class="admin-toolbar panel">
+        <div>
+          <span class="card-kicker">Admin Dashboard</span>
+          <h3>Manage fixtures, deadlines, and results</h3>
+          <p class="admin-help">Use the round filter to focus on one stage at a time, then save updates match by match.</p>
+        </div>
+        <div class="admin-toolbar-actions">
+          <button class="primary-button" type="button" data-action="calculate-points">Calculate Points</button>
+          <button class="secondary-button" type="button" data-action="export-leaderboard">Export Leaderboard JSON</button>
+          <button class="ghost-button" type="button" data-action="lock-admin">Lock Admin</button>
+          <button class="ghost-button" type="button" data-action="reset-data">Reset All Data</button>
+        </div>
       </div>
-      <div class="admin-actions">
-        <label class="field-group" for="adminPlayerDelete">
-          <span>Delete player</span>
-          <select id="adminPlayerDelete">
-            <option value="">Select player</option>
-            ${state.players
-              .slice()
-              .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)))
-              .map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`)
-              .join("")}
-          </select>
-        </label>
-        <button class="ghost-button" type="button" data-action="delete-player">Delete Player</button>
-      </div>
-      <div>
-        <label class="field-label" for="importMatchesInput">Import matches JSON</label>
-        <input class="file-input" id="importMatchesInput" type="file" accept="application/json">
+      <div class="admin-utility-grid">
+        <div class="admin-actions panel">
+          <label class="field-group admin-filter-field" for="adminRoundFilter">
+            <span>Round focus</span>
+            <select id="adminRoundFilter">
+              <option value="all">All rounds</option>
+              ${availableAdminRounds.map((option) => `
+                <option value="${escapeHtml(option.value)}" ${selectedAdminRound === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+              `).join("")}
+            </select>
+          </label>
+          <div class="admin-actions admin-actions-inline">
+            <label class="field-group" for="adminPlayerDelete">
+              <span>Delete player</span>
+              <select id="adminPlayerDelete">
+                <option value="">Select player</option>
+                ${state.players
+                  .slice()
+                  .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)))
+                  .map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)}</option>`)
+                  .join("")}
+              </select>
+            </label>
+            <button class="ghost-button" type="button" data-action="delete-player">Delete Player</button>
+          </div>
+        </div>
+        <div class="admin-actions panel">
+          <div class="admin-summary-grid">
+            <article class="admin-summary-card">
+              <span class="card-kicker">Visible Matches</span>
+              <strong class="stat-value">${filteredMatches.length}</strong>
+            </article>
+            <article class="admin-summary-card">
+              <span class="card-kicker">Open</span>
+              <strong class="stat-value">${filteredOpenMatches}</strong>
+            </article>
+            <article class="admin-summary-card">
+              <span class="card-kicker">Finished</span>
+              <strong class="stat-value">${filteredFinishedMatches}</strong>
+            </article>
+          </div>
+          <div>
+            <label class="field-label" for="importMatchesInput">Import matches JSON</label>
+            <input class="file-input" id="importMatchesInput" type="file" accept="application/json">
+          </div>
+        </div>
       </div>
     </div>
   `;
 
-  const adminMarkup = ROUND_FILTER_OPTIONS
-    .filter((option) => option.value !== "all")
+  const adminMarkup = availableAdminRounds
     .map((option) => {
-      const roundMatches = state.matches
-        .filter((match) => match.round === option.value)
-        .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate));
+      if (selectedAdminRound !== "all" && option.value !== selectedAdminRound) {
+        return "";
+      }
+
+      const roundMatches = filteredMatches.filter((match) => match.round === option.value);
 
       if (!roundMatches.length) {
         return "";
@@ -1709,19 +2188,27 @@ function renderAdmin() {
           <div class="admin-grid">
             ${roundMatches.map((match) => `
               <article class="admin-card">
-                <div>
-                  <span class="card-kicker">${escapeHtml(getMatchGroupLabel(match))}</span>
-                  <h3>${escapeHtml(match.teamA)} vs ${escapeHtml(match.teamB)}</h3>
+                <div class="admin-card-header">
+                  <div>
+                    <span class="card-kicker">${escapeHtml(getMatchGroupLabel(match))}</span>
+                    <h3>${escapeHtml(match.teamA)} vs ${escapeHtml(match.teamB)}</h3>
+                  </div>
+                  <div class="chip-row">
+                    <span class="chip">${escapeHtml(formatDateTime(match.matchDate))}</span>
+                    <span class="status-pill ${match.isFinished ? "status-closed" : "status-open"}">${match.isFinished ? "Finished" : "Pending"}</span>
+                  </div>
                 </div>
                 <form class="admin-match-form" data-match-id="${escapeHtml(match.id)}">
-                  <label class="field-group">
-                    <span>Match date</span>
-                    <input type="datetime-local" name="matchDate" value="${escapeHtml(formatDateTimeLocal(match.matchDate))}">
-                  </label>
-                  <label class="field-group">
-                    <span>Prediction deadline</span>
-                    <input type="datetime-local" name="predictionDeadline" value="${escapeHtml(formatDateTimeLocal(match.predictionDeadline))}">
-                  </label>
+                  <div class="admin-form-grid">
+                    <label class="field-group">
+                      <span>Match date</span>
+                      <input type="datetime-local" name="matchDate" value="${escapeHtml(formatDateTimeLocal(match.matchDate))}">
+                    </label>
+                    <label class="field-group">
+                      <span>Prediction deadline</span>
+                      <input type="datetime-local" name="predictionDeadline" value="${escapeHtml(formatDateTimeLocal(match.predictionDeadline))}">
+                    </label>
+                  </div>
                   <div class="score-inputs">
                     <label class="score-box">
                       <span>${escapeHtml(match.teamA)} actual</span>
@@ -1732,11 +2219,13 @@ function renderAdmin() {
                       <input type="number" min="0" step="1" name="actualScoreB" value="${match.actualScoreB ?? ""}">
                     </label>
                   </div>
-                  <label class="chip">
-                    <input type="checkbox" name="isFinished" ${match.isFinished ? "checked" : ""}>
-                    Mark match as finished
-                  </label>
-                  <button class="primary-button" type="submit">Save Match</button>
+                  <div class="admin-form-footer">
+                    <label class="chip admin-toggle-chip">
+                      <input type="checkbox" name="isFinished" ${match.isFinished ? "checked" : ""}>
+                      Mark match as finished
+                    </label>
+                    <button class="primary-button" type="submit">Save Match</button>
+                  </div>
                 </form>
               </article>
             `).join("")}
@@ -1798,16 +2287,35 @@ function renderAdmin() {
   dom.adminWorkspace.classList.remove("hidden");
   dom.adminWorkspace.innerHTML = `
     ${adminMarkup}
-    <section class="round-section panel">
-      <div class="round-section-header">
-        <h3>Group Results</h3>
-        <span class="chip">${countActualBestThirdSelections()}/${BEST_THIRD_QUALIFIERS_COUNT} best third spots used</span>
-      </div>
-      <div class="admin-grid">
-        ${groupCards}
-      </div>
-    </section>
+    ${shouldShowGroupsSection ? `
+      <section class="round-section panel">
+        <div class="round-section-header">
+          <h3>Group Results</h3>
+          <span class="chip">${countActualBestThirdSelections()}/${BEST_THIRD_QUALIFIERS_COUNT} best third spots used</span>
+        </div>
+        <div class="admin-grid">
+          ${groupCards}
+        </div>
+      </section>
+    ` : ""}
   `;
+}
+
+function getAdminRoundFilterValue(availableAdminRounds) {
+  const availableValues = new Set(["all", ...availableAdminRounds.map((option) => option.value)]);
+  const currentValue = String(uiState.adminRoundFilter || "");
+  if (availableValues.has(currentValue)) {
+    return currentValue;
+  }
+
+  const currentRound = getCurrentRoundOptionValue();
+  if (availableValues.has(currentRound)) {
+    uiState.adminRoundFilter = currentRound;
+    return currentRound;
+  }
+
+  uiState.adminRoundFilter = "all";
+  return "all";
 }
 
 function recalculatePoints(sourceState = state) {
@@ -1937,14 +2445,23 @@ function getMatchFilters() {
   return {
     round: dom.roundFilter.value || "all",
     group: dom.groupFilter.value || "all",
+    team: dom.teamFilter.value || "all",
     status: dom.statusFilter.value || "all"
   };
 }
 
 function populateMatchFilters() {
   const availableGroups = [...new Set(state.matches.map(getMatchGroupLabel))];
+  const availableTeams = getTournamentTeams()
+    .map((team) => ({
+      label: String(team.name || "").trim(),
+      value: normalizeName(team.name)
+    }))
+    .filter((team) => team.label && team.value)
+    .sort((teamA, teamB) => teamA.label.localeCompare(teamB.label));
   const previousRound = dom.roundFilter.value;
   const previousGroup = dom.groupFilter.value;
+  const previousTeam = dom.teamFilter.value;
   const currentRound = getCurrentRoundOptionValue();
 
   dom.roundFilter.innerHTML = ROUND_FILTER_OPTIONS
@@ -1955,10 +2472,15 @@ function populateMatchFilters() {
     .concat(availableGroups.map((group) => `<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`))
     .join("");
 
+  dom.teamFilter.innerHTML = [`<option value="all">All Teams</option>`]
+    .concat(availableTeams.map((team) => `<option value="${escapeHtml(team.value)}">${escapeHtml(team.label)}</option>`))
+    .join("");
+
   dom.roundFilter.value = ROUND_FILTER_OPTIONS.some((option) => option.value === previousRound)
     ? previousRound
     : currentRound;
   dom.groupFilter.value = availableGroups.includes(previousGroup) ? previousGroup : "all";
+  dom.teamFilter.value = availableTeams.some((team) => team.value === previousTeam) ? previousTeam : "all";
 }
 
 function getCurrentRoundOptionValue() {
@@ -1967,6 +2489,15 @@ function getCurrentRoundOptionValue() {
     return currentRound;
   }
   return "all";
+}
+
+function applyRoundTheme() {
+  document.body.dataset.roundTheme = getSelectedRoundTheme();
+}
+
+function getSelectedRoundTheme() {
+  const selectedRound = dom.roundFilter?.value || "all";
+  return ROUND_THEME_MAP[selectedRound] || "default";
 }
 
 function sortMatchesForDisplay(matches, player) {

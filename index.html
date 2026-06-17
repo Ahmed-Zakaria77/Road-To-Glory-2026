@@ -10,7 +10,7 @@
   <link
     href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700;800&family=Chakra+Petch:wght@500;600;700&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260611-08">
+  <link rel="stylesheet" href="style.css?v=20260618-07">
   <link rel="icon" type="image/png" href="images/WC26.png">
 </head>
 
@@ -30,12 +30,36 @@
         Connecting
       </div>
 
-      <nav class="topbar-nav">
-        <a href="#matches">Matches</a>
-        <a href="#groups">Groups</a>
-        <a href="#leaderboard">Leaderboard</a>
-        <a href="#admin">Admin</a>
-      </nav>
+      <div class="topbar-tools">
+        <nav class="topbar-nav">
+          <a href="#matches">Matches</a>
+          <a href="#groups">Groups</a>
+          <a href="#leaderboard">Leaderboard</a>
+          <a href="#admin">Admin</a>
+        </nav>
+
+        <div class="notification-shell" id="notificationShell">
+          <button class="notification-button" id="notificationButton" type="button" data-action="toggle-notifications"
+            aria-expanded="false" aria-controls="notificationPanel" aria-label="Open player notifications">
+            <span class="notification-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path
+                  d="M12 3.75a4.5 4.5 0 0 0-4.5 4.5v1.2c0 .8-.24 1.57-.7 2.2l-1.1 1.55a2.25 2.25 0 0 0 1.84 3.55h9.92a2.25 2.25 0 0 0 1.84-3.55l-1.1-1.54a3.75 3.75 0 0 1-.7-2.2v-1.2A4.5 4.5 0 0 0 12 3.75Zm0 16.5a2.63 2.63 0 0 0 2.47-1.75H9.53A2.63 2.63 0 0 0 12 20.25Z"
+                  fill="currentColor" />
+              </svg>
+            </span>
+            <span class="notification-badge hidden" id="notificationBadge">0</span>
+          </button>
+
+          <div class="notification-panel hidden" id="notificationPanel" role="dialog" aria-label="Player notifications">
+            <div class="notification-panel-header">
+              <strong>Notifications</strong>
+              <span class="notification-panel-meta" id="notificationMeta">Latest match results for your player.</span>
+            </div>
+            <div class="notification-list" id="notificationList"></div>
+          </div>
+        </div>
+      </div>
     </header>
 
     <main>
@@ -133,6 +157,10 @@
             <label class="field-group">
               <span>Group</span>
               <select id="groupFilter"></select>
+            </label>
+            <label class="field-group">
+              <span>Team</span>
+              <select id="teamFilter"></select>
             </label>
             <label class="field-group">
               <span>Status</span>
@@ -241,7 +269,7 @@
 
   <script src="app-config.js?v=20260611-01"></script>
   <script src="data.js?v=20260611-19"></script>
-  <script src="script.js?v=20260614-01"></script>
+  <script src="script.js?v=20260618-06"></script>
 </body>
 
 </html>
