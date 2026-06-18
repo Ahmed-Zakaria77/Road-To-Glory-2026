@@ -622,6 +622,7 @@ main {
   display: grid;
   gap: 1.5rem;
   justify-items: end;
+  min-width: 0;
 }
 
 .score-orb {
@@ -700,6 +701,7 @@ main {
 .stats-grid {
   width: 100%;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-self: stretch;
 }
 
 .panel,
@@ -749,6 +751,7 @@ main {
 }
 
 .stat-card {
+  min-width: 0;
   min-height: 112px;
 }
 
@@ -765,6 +768,7 @@ main {
   margin-top: 0.8rem;
   font-size: clamp(1.15rem, 4vw, 1.5rem);
   font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .section-heading {
@@ -1776,6 +1780,7 @@ body[data-round-theme="round-2"] .round-group-block {
 
   .hero-aside {
     justify-items: start;
+    width: 100%;
   }
 
   .filter-grid,
@@ -1798,12 +1803,26 @@ body[data-round-theme="round-2"] .round-group-block {
 
 @media (max-width: 720px) {
   :root {
-    --topbar-offset: 190px;
+    --topbar-offset: 218px;
   }
 
   .topbar {
     flex-direction: column;
-    align-items: start;
+    align-items: stretch;
+    gap: 0.85rem;
+    padding: 0.95rem 1rem 1rem;
+  }
+
+  .brand-mark {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+    gap: 0.65rem;
+    font-size: 0.95rem;
+  }
+
+  .brand-mark img {
+    width: 42px !important;
   }
 
   .sync-banner {
@@ -1819,8 +1838,10 @@ body[data-round-theme="round-2"] .round-group-block {
 
   .topbar-tools {
     width: 100%;
-    justify-content: space-between;
-    align-items: flex-start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.75rem;
+    align-items: center;
   }
 
   .admin-actions-inline,
@@ -1830,16 +1851,61 @@ body[data-round-theme="round-2"] .round-group-block {
   }
 
   .topbar-nav {
-    justify-content: space-between;
+    min-width: 0;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.85rem;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .topbar-nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 46px;
+    white-space: nowrap;
+    font-size: 0.96rem;
   }
 
   .notification-shell {
-    align-self: flex-end;
+    align-self: center;
   }
 
   .notification-panel {
     right: 0;
     width: min(100vw - 2rem, 420px);
+  }
+
+  .hero-section,
+  .hero-aside,
+  #statsGrid {
+    min-width: 0;
+    width: 100%;
+  }
+
+  #statsGrid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.75rem;
+  }
+
+  #statsGrid > .stat-card {
+    width: auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    min-height: 96px;
+    padding: 1rem;
+  }
+
+  .stat-value {
+    margin-top: 0.65rem;
+    font-size: clamp(0.95rem, 4vw, 1.2rem);
+    line-height: 1.25;
   }
 
   .login-row {
