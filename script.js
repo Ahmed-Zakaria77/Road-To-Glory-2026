@@ -615,6 +615,7 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     void handleClick(event);
   });
+  document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
   document.addEventListener("keydown", handleKeydown);
 }
@@ -774,6 +775,13 @@ function handleKeydown(event) {
   }
 }
 
+function handleInput(event) {
+  const matchForm = event.target.closest(".match-form");
+  if (matchForm) {
+    syncMatchFormState(matchForm);
+  }
+}
+
 function handleChange(event) {
   if (event.target.id === "importMatchesInput") {
     void importMatchesFromFile(event.target.files?.[0]);
@@ -900,6 +908,7 @@ async function handleMatchPrediction(form) {
     return;
   }
 
+  const hadExistingPrediction = Boolean(getMatchPrediction(player.id, matchId));
   const now = new Date().toISOString();
   const result = await applySharedMutation((draftState) => {
     const draftPlayer = draftState.players.find((item) => item.id === player.id);
@@ -919,7 +928,11 @@ async function handleMatchPrediction(form) {
     }
 
     if (existingPrediction) {
-      throw new Error("You can submit only once for this match");
+      existingPrediction.predictedScoreA = predictedScoreA;
+      existingPrediction.predictedScoreB = predictedScoreB;
+      existingPrediction.submittedAt = now;
+      existingPrediction.points = 0;
+      return;
     }
 
     draftState.matchPredictions.push({
@@ -939,7 +952,7 @@ async function handleMatchPrediction(form) {
   }
 
   renderAll();
-  showToast("Prediction saved", "success");
+  showToast(hadExistingPrediction ? "Prediction updated" : "Prediction saved", "success");
 }
 
 async function handleGroupPrediction(form) {
@@ -1556,12 +1569,18 @@ function renderMatches() {
   }).join("");
 
   dom.matchesContainer.innerHTML = roundMarkup;
+  syncMatchFormStates();
 }
 
 function renderMatchCard(match, player) {
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const prediction = player ? getMatchPrediction(player.id, match.id) : null;
-  const isLocked = !isOpen || Boolean(prediction);
+  const isLocked = !isOpen;
+  const buttonLabel = !isOpen
+    ? "Prediction Closed"
+    : prediction
+      ? "Update Prediction"
+      : "Submit Prediction";
 
   const actualScore = match.actualScoreA !== null && match.actualScoreB !== null
     ? `${match.actualScoreA} - ${match.actualScoreB}`
@@ -1598,7 +1617,12 @@ function renderMatchCard(match, player) {
         <span class="chip">Actual: ${escapeHtml(actualScore)}</span>
       </div>
 
-      <form class="match-form" data-match-id="${escapeHtml(match.id)}">
+      <form
+        class="match-form"
+        data-match-id="${escapeHtml(match.id)}"
+        data-initial-score-a="${escapeHtml(prediction ? prediction.predictedScoreA : "")}"
+        data-initial-score-b="${escapeHtml(prediction ? prediction.predictedScoreB : "")}"
+      >
         <div class="score-inputs">
           <label class="score-box">
             <span>${escapeHtml(match.teamA)}</span>
@@ -1611,14 +1635,14 @@ function renderMatchCard(match, player) {
           </label>
         </div>
         <div class="inline-actions">
-          <button class="primary-button" type="submit" ${isLocked ? "disabled" : ""}>${prediction ? "Prediction Locked" : "Submit Prediction"}</button>
+          <button class="primary-button" type="submit" data-role="match-submit" ${isLocked ? "disabled" : ""}>${buttonLabel}</button>
           <span class="deadline-note">Deadline: ${escapeHtml(formatDateTime(match.predictionDeadline))}</span>
         </div>
       </form>
 
       ${prediction ? `
         <p class="prediction-meta">
-          ${match.isFinished ? `Prediction submitted - earned ${prediction.points} pts` : "Prediction submitted"}
+          ${match.isFinished ? `Prediction submitted - earned ${prediction.points} pts` : "Prediction saved. You can update it until the deadline."}
         </p>
       ` : `<p class="prediction-meta">No prediction saved for this player yet.</p>`}
 
@@ -1732,6 +1756,50 @@ function renderGroupCard(group, player) {
       ` : ""}
     </article>
   `;
+}
+
+function syncMatchFormStates() {
+  document.querySelectorAll(".match-form").forEach((form) => {
+    syncMatchFormState(form);
+  });
+}
+
+function syncMatchFormState(form) {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  const submitButton = form.querySelector('[data-role="match-submit"]');
+  if (!(submitButton instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const matchId = String(form.dataset.matchId || "");
+  const match = state.matches.find((item) => String(item.id) === matchId);
+  if (!match) {
+    return;
+  }
+
+  const isOpen = isPredictionOpen(match.predictionDeadline);
+  const initialScoreA = String(form.dataset.initialScoreA || "");
+  const initialScoreB = String(form.dataset.initialScoreB || "");
+  const currentScoreA = String(form.elements.predictedScoreA?.value || "").trim();
+  const currentScoreB = String(form.elements.predictedScoreB?.value || "").trim();
+  const hasSavedPrediction = initialScoreA !== "" && initialScoreB !== "";
+  const isDirty = hasSavedPrediction && (
+    currentScoreA !== initialScoreA
+    || currentScoreB !== initialScoreB
+  );
+
+  submitButton.disabled = !isOpen;
+  if (!isOpen) {
+    submitButton.textContent = "Prediction Closed";
+    return;
+  }
+
+  submitButton.textContent = hasSavedPrediction && !isDirty
+    ? "Update Prediction"
+    : "Submit Prediction";
 }
 
 function renderLeaderboard() {
