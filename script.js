@@ -3,11 +3,73 @@ const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
 const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_PASSWORD = "ziko97";
+const CHAT_MAX_MESSAGE_LENGTH = 280;
+const CHAT_MAX_MESSAGES = 150;
+const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
+const CHAT_REACTION_EMOJIS = ["❤️", "😂", "🔥", "👏", "😢"];
+const CHAT_BLOCKED_TERMS_EN = [
+  "fuck",
+  "fucking",
+  "shit",
+  "bitch",
+  "asshole",
+  "bastard",
+  "slut",
+  "whore",
+  "dick",
+  "pussy",
+  "motherfucker",
+  "cunt",
+  "nigger",
+  "nigga"
+];
+const CHAT_BLOCKED_TERMS_AR = [
+  "احا",
+  "كسم",
+  "كس ام",
+  "كساخت",
+  "متناك",
+  "شرموط",
+  "عرص",
+  "خول",
+  "قحبه",
+  "قحبة",
+  "طيز",
+  "زبي",
+  "زبك",
+  "منيك",
+  "منيكه",
+  "ينيك"
+];
 
 const MATCH_SCORING = {
   exactScore: 6,
   correctResult: 5
 };
+
+const SPECIAL_FEATURES = {
+  doublePick: {
+    key: "doublePick",
+    label: "Double Pick",
+    shortLabel: "X2",
+    description: "Double the earned match points when your pick scores."
+  },
+  goalRush: {
+    key: "goalRush",
+    label: "Goal Rush",
+    shortLabel: "GR",
+    description: "Earn +1 bonus point for every real goal scored in the match."
+  },
+  perfectBoost: {
+    key: "perfectBoost",
+    label: "Perfect Boost",
+    shortLabel: "PB",
+    description: "An exact score pays 8 points instead of 6."
+  }
+};
+
+const SPECIAL_FEATURE_KEYS = Object.keys(SPECIAL_FEATURES);
+const FINAL_GROUP_STAGE_ROUND = "Group Stage - Round 3";
 
 const GROUP_SCORING = {
   correctQualifiedTeams: 8,
@@ -31,7 +93,8 @@ const ROUND_FILTER_OPTIONS = [
 ];
 
 const ROUND_THEME_MAP = {
-  "Group Stage - Round 2": "round-2"
+  "Group Stage - Round 2": "round-2",
+  "Group Stage - Round 3": "round-3"
 };
 
 const scheduleSource = normalizeWorldCupData(
@@ -67,6 +130,18 @@ const dom = {
   notificationPanel: document.getElementById("notificationPanel"),
   notificationMeta: document.getElementById("notificationMeta"),
   notificationList: document.getElementById("notificationList"),
+  chatShell: document.getElementById("chatShell"),
+  chatToggleButton: document.getElementById("chatToggleButton"),
+  chatToggleBadge: document.getElementById("chatToggleBadge"),
+  chatPanel: document.getElementById("chatPanel"),
+  chatMeta: document.getElementById("chatMeta"),
+  chatCountChip: document.getElementById("chatCountChip"),
+  chatMessages: document.getElementById("chatMessages"),
+  chatForm: document.getElementById("chatForm"),
+  chatInput: document.getElementById("chatInput"),
+  chatCharCount: document.getElementById("chatCharCount"),
+  chatEmojiToggle: document.getElementById("chatEmojiToggle"),
+  chatEmojiTray: document.getElementById("chatEmojiTray"),
   adminGate: document.getElementById("adminGate"),
   adminWorkspace: document.getElementById("adminWorkspace"),
   toastStack: document.getElementById("toastStack"),
@@ -78,6 +153,8 @@ const uiState = {
   timerId: null,
   syncTimerId: null,
   notificationsOpen: false,
+  chatOpen: false,
+  chatEmojiOpen: false,
   historyFilterManuallyChanged: false,
   historyFilterPlayerContextId: "",
   adminRoundFilter: ""
@@ -118,6 +195,7 @@ function createDefaultState() {
     matches: scheduleSource.matches.map(cloneObject),
     matchPredictions: [],
     groupPredictions: [],
+    chatMessages: [],
     scheduleVersion: scheduleSource.version
   };
 }
@@ -152,7 +230,8 @@ function loadSessionState() {
       activePlayerId: String(parsed?.activePlayerId || ""),
       adminUnlocked: Boolean(parsed?.adminUnlocked),
       notificationReadByPlayer: normalizeNotificationReadByPlayer(parsed?.notificationReadByPlayer),
-      rankTrackingByPlayer: normalizeRankTrackingByPlayer(parsed?.rankTrackingByPlayer)
+      rankTrackingByPlayer: normalizeRankTrackingByPlayer(parsed?.rankTrackingByPlayer),
+      chatLastSeenByPlayer: normalizeChatLastSeenByPlayer(parsed?.chatLastSeenByPlayer)
     };
   } catch (error) {
     console.warn("Could not load the local session. Resetting to defaults.", error);
@@ -165,7 +244,8 @@ function createDefaultSessionState() {
     activePlayerId: "",
     adminUnlocked: false,
     notificationReadByPlayer: {},
-    rankTrackingByPlayer: {}
+    rankTrackingByPlayer: {},
+    chatLastSeenByPlayer: {}
   };
 }
 
@@ -197,6 +277,18 @@ function normalizeRankTrackingByPlayer(rawValue) {
         latestChange: normalizeRankChangeEntry(value?.latestChange)
       }
     ])
+  );
+}
+
+function normalizeChatLastSeenByPlayer(rawValue) {
+  if (!rawValue || typeof rawValue !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawValue)
+      .map(([playerId, value]) => [String(playerId), normalizeTimestamp(value)])
+      .filter(([, value]) => Boolean(value))
   );
 }
 
@@ -235,6 +327,7 @@ function normalizeStoredState(parsed) {
     matches: scheduleSource.matches.map(cloneObject),
     matchPredictions: Array.isArray(parsed.matchPredictions) ? parsed.matchPredictions : [],
     groupPredictions: Array.isArray(parsed.groupPredictions) ? parsed.groupPredictions : [],
+    chatMessages: normalizeChatMessages(parsed.chatMessages),
     scheduleVersion: scheduleSource.version
   };
 
@@ -312,6 +405,7 @@ function mergeStoredMatchesWithSchedule(storedMatches) {
         actualScoreA: storedMatch.actualScoreA ?? defaultMatch.actualScoreA,
         actualScoreB: storedMatch.actualScoreB ?? defaultMatch.actualScoreB,
         isFinished: Boolean(storedMatch.isFinished),
+        resultUpdatedAt: storedMatch.resultUpdatedAt ?? defaultMatch.resultUpdatedAt,
         teamALogo: storedMatch.teamALogo || defaultMatch.teamALogo,
         teamBLogo: storedMatch.teamBLogo || defaultMatch.teamBLogo
       },
@@ -331,7 +425,10 @@ function reconcilePredictions(nextState) {
     .map((prediction) => ({
       ...prediction,
       matchId: String(prediction.matchId),
-      playerId: String(prediction.playerId)
+      playerId: String(prediction.playerId),
+      specialFeature: normalizeSpecialFeature(prediction.specialFeature),
+      basePoints: Number(prediction.basePoints || 0),
+      specialBonusPoints: Number(prediction.specialBonusPoints || 0)
     }));
 
   nextState.groupPredictions = nextState.groupPredictions
@@ -343,6 +440,8 @@ function reconcilePredictions(nextState) {
       predictedThird: String(prediction.predictedThird || ""),
       predictedThirdQualifies: Boolean(prediction.predictedThirdQualifies)
     }));
+
+  nextState.chatMessages = normalizeChatMessages(nextState.chatMessages);
 }
 
 function reconcileSessionState() {
@@ -357,6 +456,9 @@ function reconcileSessionState() {
   if (!sessionState.rankTrackingByPlayer || typeof sessionState.rankTrackingByPlayer !== "object") {
     sessionState.rankTrackingByPlayer = {};
   }
+  if (!sessionState.chatLastSeenByPlayer || typeof sessionState.chatLastSeenByPlayer !== "object") {
+    sessionState.chatLastSeenByPlayer = {};
+  }
 
   Object.keys(sessionState.notificationReadByPlayer).forEach((playerId) => {
     if (!validPlayerIds.has(playerId)) {
@@ -366,6 +468,11 @@ function reconcileSessionState() {
   Object.keys(sessionState.rankTrackingByPlayer).forEach((playerId) => {
     if (!validPlayerIds.has(playerId)) {
       delete sessionState.rankTrackingByPlayer[playerId];
+    }
+  });
+  Object.keys(sessionState.chatLastSeenByPlayer).forEach((playerId) => {
+    if (!validPlayerIds.has(playerId)) {
+      delete sessionState.chatLastSeenByPlayer[playerId];
     }
   });
 
@@ -570,7 +677,7 @@ function startSharedSyncLoop() {
 
 function shouldDeferSharedRefresh() {
   const activeElement = document.activeElement;
-  return Boolean(activeElement?.closest(".match-form, .group-form, .admin-match-form, .admin-group-form"));
+  return Boolean(activeElement?.closest(".match-form, .group-form, .admin-match-form, .admin-group-form, .chat-form"));
 }
 
 async function syncSharedState({ silent = true } = {}) {
@@ -646,6 +753,12 @@ async function handleSubmit(event) {
     return;
   }
 
+  if (form.id === "chatForm") {
+    event.preventDefault();
+    await handleChatMessage(form);
+    return;
+  }
+
   if (form.matches(".admin-login-form")) {
     event.preventDefault();
     handleAdminLogin(form);
@@ -670,13 +783,46 @@ async function handleClick(event) {
     return;
   }
 
+  if (target.closest("[data-action='toggle-chat']")) {
+    toggleChatPanel();
+    return;
+  }
+
+  if (target.closest("[data-action='close-chat']")) {
+    closeChatPanel();
+    return;
+  }
+
+  if (target.closest("[data-action='toggle-emoji-picker']")) {
+    toggleEmojiPicker();
+    return;
+  }
+
+  if (target.closest("[data-action='insert-chat-emoji']")) {
+    insertChatEmoji(target.closest("[data-action='insert-chat-emoji']"));
+    return;
+  }
+
+  if (target.closest("[data-action='toggle-chat-reaction']")) {
+    await handleChatReaction(target.closest("[data-action='toggle-chat-reaction']"));
+    return;
+  }
+
   if (target.closest("[data-action='toggle-notifications']")) {
     toggleNotifications();
     return;
   }
 
+  if (target.closest("[data-action='toggle-special-feature']")) {
+    handleSpecialFeatureToggle(target.closest("[data-action='toggle-special-feature']"));
+    return;
+  }
+
   if (uiState.notificationsOpen && !target.closest(".notification-shell")) {
     closeNotifications();
+  }
+  if (uiState.chatOpen && !target.closest(".chat-shell")) {
+    closeChatPanel();
   }
 
   const actionTarget = target.closest("[data-action]");
@@ -705,6 +851,7 @@ async function handleClick(event) {
       draftState.matches = nextState.matches;
       draftState.matchPredictions = nextState.matchPredictions;
       draftState.groupPredictions = nextState.groupPredictions;
+      draftState.chatMessages = nextState.chatMessages;
       draftState.scheduleVersion = nextState.scheduleVersion;
     });
     if (!result.ok) {
@@ -773,9 +920,17 @@ function handleKeydown(event) {
   if (event.key === "Escape" && uiState.notificationsOpen) {
     closeNotifications();
   }
+  if (event.key === "Escape" && uiState.chatOpen) {
+    closeChatPanel();
+  }
 }
 
 function handleInput(event) {
+  if (event.target.id === "chatInput") {
+    renderChatCharacterCount();
+    return;
+  }
+
   const matchForm = event.target.closest(".match-form");
   if (matchForm) {
     syncMatchFormState(matchForm);
@@ -804,6 +959,37 @@ function handleChange(event) {
     }
     syncGroupFormState(groupForm);
   }
+}
+
+function handleSpecialFeatureToggle(button) {
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const player = getActivePlayer();
+  const form = button.closest(".match-form");
+  if (!player || !(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  const matchId = String(form.dataset.matchId || "");
+  const match = state.matches.find((item) => String(item.id) === matchId);
+  if (!match || !isSpecialFeatureMatch(match) || !isPredictionOpen(match.predictionDeadline)) {
+    return;
+  }
+
+  const hiddenInput = form.querySelector('input[name="specialFeature"]');
+  if (!(hiddenInput instanceof HTMLInputElement) || button.disabled) {
+    return;
+  }
+
+  const featureKey = normalizeSpecialFeature(button.dataset.feature);
+  if (!featureKey) {
+    return;
+  }
+
+  hiddenInput.value = hiddenInput.value === featureKey ? "" : featureKey;
+  syncMatchFormStates();
 }
 
 function enforceBestThirdSelectionLimit(form, checkbox) {
@@ -849,6 +1035,7 @@ async function handleLogin(form) {
         pin: playerPin,
         totalPoints: 0,
         matchPoints: 0,
+        specialPoints: 0,
         groupPoints: 0,
         exactScores: 0,
         createdAt: new Date().toISOString(),
@@ -902,13 +1089,18 @@ async function handleMatchPrediction(form) {
   const formData = new FormData(form);
   const predictedScoreA = parseScoreInput(formData.get("predictedScoreA"));
   const predictedScoreB = parseScoreInput(formData.get("predictedScoreB"));
+  const specialFeature = isSpecialFeatureMatch(match)
+    ? normalizeSpecialFeature(formData.get("specialFeature"))
+    : "";
 
   if (predictedScoreA === null || predictedScoreB === null) {
     showToast("Scores must be numbers 0 or higher", "error");
     return;
   }
 
-  const hadExistingPrediction = Boolean(getMatchPrediction(player.id, matchId));
+  const previousPrediction = getMatchPrediction(player.id, matchId);
+  const hadExistingPrediction = Boolean(previousPrediction);
+  const previousSpecialFeature = normalizeSpecialFeature(previousPrediction?.specialFeature);
   const now = new Date().toISOString();
   const result = await applySharedMutation((draftState) => {
     const draftPlayer = draftState.players.find((item) => item.id === player.id);
@@ -927,11 +1119,16 @@ async function handleMatchPrediction(form) {
       throw new Error("Deadline passed");
     }
 
+    validateSpecialFeatureSelection(draftPlayer.id, draftMatch, specialFeature, draftState);
+
     if (existingPrediction) {
       existingPrediction.predictedScoreA = predictedScoreA;
       existingPrediction.predictedScoreB = predictedScoreB;
+      existingPrediction.specialFeature = specialFeature;
       existingPrediction.submittedAt = now;
       existingPrediction.points = 0;
+      existingPrediction.basePoints = 0;
+      existingPrediction.specialBonusPoints = 0;
       return;
     }
 
@@ -942,8 +1139,11 @@ async function handleMatchPrediction(form) {
       matchId,
       predictedScoreA,
       predictedScoreB,
+      specialFeature,
       submittedAt: now,
-      points: 0
+      points: 0,
+      basePoints: 0,
+      specialBonusPoints: 0
     });
   });
 
@@ -952,6 +1152,16 @@ async function handleMatchPrediction(form) {
   }
 
   renderAll();
+  if (specialFeature && previousSpecialFeature !== specialFeature) {
+    showToast(`${getPredictionFeatureLabel(specialFeature)} activated for ${match.teamA} vs ${match.teamB}`, "success");
+    return;
+  }
+
+  if (!specialFeature && previousSpecialFeature) {
+    showToast(`Special feature removed from ${match.teamA} vs ${match.teamB}`, "success");
+    return;
+  }
+
   showToast(hadExistingPrediction ? "Prediction updated" : "Prediction saved", "success");
 }
 
@@ -1040,6 +1250,109 @@ async function handleGroupPrediction(form) {
   showToast("Prediction saved", "success");
 }
 
+async function handleChatMessage(form) {
+  const player = getActivePlayer();
+  if (!player) {
+    showToast("Log in first to use the player chat", "error");
+    document.getElementById("login").scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+
+  const formData = new FormData(form);
+  const messageText = normalizeChatMessageText(formData.get("message"));
+  if (!messageText) {
+    showToast("Write a message before sending", "error");
+    return;
+  }
+
+  if (containsBlockedChatLanguage(messageText)) {
+    showToast("Please remove offensive words before sending your message", "error");
+    return;
+  }
+
+  const result = await applySharedMutation((draftState) => {
+    const draftPlayer = draftState.players.find((item) => item.id === player.id);
+    if (!draftPlayer) {
+      throw new Error("Player session expired. Please log in again.");
+    }
+
+    draftState.chatMessages.push({
+      id: createId("chat"),
+      playerId: draftPlayer.id,
+      playerName: draftPlayer.name,
+      text: messageText,
+      createdAt: new Date().toISOString()
+    });
+    draftState.chatMessages = normalizeChatMessages(draftState.chatMessages);
+  });
+
+  if (!result.ok) {
+    return;
+  }
+
+  form.reset();
+  renderAll();
+  showToast("Message sent", "success");
+}
+
+async function handleChatReaction(button) {
+  if (!(button instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const player = getActivePlayer();
+  if (!player) {
+    showToast("Log in first to react to chat messages", "error");
+    return;
+  }
+
+  const messageId = String(button.dataset.messageId || "");
+  const emoji = String(button.dataset.emoji || "");
+  if (!messageId || !CHAT_REACTION_EMOJIS.includes(emoji)) {
+    return;
+  }
+
+  const result = await applySharedMutation((draftState) => {
+    const draftMessage = draftState.chatMessages.find((message) => String(message.id) === messageId);
+    if (!draftMessage) {
+      throw new Error("Chat message not found");
+    }
+
+    if (String(draftMessage.playerId) === player.id) {
+      throw new Error("You cannot react to your own message");
+    }
+
+    draftMessage.reactions = normalizeChatReactions(draftMessage.reactions);
+    const existingIndex = draftMessage.reactions.findIndex((reaction) => reaction.playerId === player.id);
+
+    if (existingIndex >= 0 && draftMessage.reactions[existingIndex].emoji === emoji) {
+      draftMessage.reactions.splice(existingIndex, 1);
+    } else if (existingIndex >= 0) {
+      draftMessage.reactions[existingIndex] = {
+        playerId: player.id,
+        playerName: player.name,
+        emoji,
+        reactedAt: new Date().toISOString()
+      };
+    } else {
+      draftMessage.reactions.push({
+        playerId: player.id,
+        playerName: player.name,
+        emoji,
+        reactedAt: new Date().toISOString()
+      });
+    }
+
+    draftState.chatMessages = normalizeChatMessages(draftState.chatMessages);
+  });
+
+  if (!result.ok) {
+    return;
+  }
+
+  renderAll();
+}
+
 function handleAdminLogin(form) {
   const password = String(new FormData(form).get("password") || "");
   if (password !== ADMIN_PASSWORD) {
@@ -1099,11 +1412,23 @@ async function handleAdminMatchUpdate(form) {
       throw new Error("Match not found");
     }
 
+    const resultChanged = (
+      draftMatch.actualScoreA !== actualScoreA
+      || draftMatch.actualScoreB !== actualScoreB
+      || draftMatch.isFinished !== isFinished
+    );
+    const nextResultReady = Boolean(isFinished && actualScoreA !== null && actualScoreB !== null);
+
     draftMatch.matchDate = matchDate;
     draftMatch.predictionDeadline = predictionDeadline;
     draftMatch.actualScoreA = actualScoreA;
     draftMatch.actualScoreB = actualScoreB;
     draftMatch.isFinished = isFinished;
+    if (nextResultReady && resultChanged) {
+      draftMatch.resultUpdatedAt = new Date().toISOString();
+    } else if (!nextResultReady) {
+      draftMatch.resultUpdatedAt = null;
+    }
 
     syncGroupPredictionDeadlines(draftState.groups, draftState.matches);
   });
@@ -1165,6 +1490,85 @@ async function handleAdminGroupUpdate(form) {
   showToast("Group ranking updated", "success");
 }
 
+function normalizeSpecialFeature(value) {
+  const normalizedValue = String(value || "").trim();
+  return SPECIAL_FEATURE_KEYS.includes(normalizedValue) ? normalizedValue : "";
+}
+
+function getSpecialFeature(featureKey) {
+  return SPECIAL_FEATURES[normalizeSpecialFeature(featureKey)] || null;
+}
+
+function isSpecialFeatureMatch(match) {
+  return Boolean(match && match.round === FINAL_GROUP_STAGE_ROUND && match.group);
+}
+
+function getPlayerSpecialFeatureUsage(playerId, sourceState = state, excludeMatchId = "") {
+  const usage = new Map();
+
+  sourceState.matchPredictions.forEach((prediction) => {
+    if (prediction.playerId !== playerId) {
+      return;
+    }
+
+    const matchId = String(prediction.matchId || "");
+    if (excludeMatchId && matchId === String(excludeMatchId)) {
+      return;
+    }
+
+    const featureKey = normalizeSpecialFeature(prediction.specialFeature);
+    const match = sourceState.matches.find((item) => String(item.id) === matchId);
+    if (!featureKey || !isSpecialFeatureMatch(match)) {
+      return;
+    }
+
+    usage.set(featureKey, matchId);
+  });
+
+  return usage;
+}
+
+function getCurrentSpecialFeatureSelections() {
+  const selections = new Map();
+
+  document.querySelectorAll('.match-form input[name="specialFeature"]').forEach((input) => {
+    if (!(input instanceof HTMLInputElement)) {
+      return;
+    }
+
+    const form = input.closest(".match-form");
+    const featureKey = normalizeSpecialFeature(input.value);
+    const matchId = String(form?.dataset.matchId || "");
+    if (!featureKey || !matchId) {
+      return;
+    }
+
+    selections.set(featureKey, matchId);
+  });
+
+  return selections;
+}
+
+function validateSpecialFeatureSelection(playerId, match, specialFeature, sourceState = state) {
+  if (!specialFeature) {
+    return;
+  }
+
+  if (!isSpecialFeatureMatch(match)) {
+    throw new Error("Special features are available only in the final group stage round.");
+  }
+
+  const existingUsage = getPlayerSpecialFeatureUsage(playerId, sourceState, match.id);
+  const usedMatchId = existingUsage.get(specialFeature);
+  if (usedMatchId && usedMatchId !== String(match.id)) {
+    throw new Error(`${getSpecialFeature(specialFeature)?.label || "This feature"} is already used on another Round 3 match.`);
+  }
+}
+
+function getPredictionFeatureLabel(featureKey) {
+  return getSpecialFeature(featureKey)?.label || "";
+}
+
 function renderAll() {
   applyRoundTheme();
   renderStats();
@@ -1175,6 +1579,7 @@ function renderAll() {
   renderLeaderboard();
   renderHistoryPlayerFilter();
   renderHistory();
+  renderChat();
   renderAdmin();
 }
 
@@ -1241,10 +1646,10 @@ function renderNotifications() {
   dom.notificationPanel.classList.toggle("hidden", !uiState.notificationsOpen);
 
   if (!player) {
-    dom.notificationMeta.textContent = "Sign in to see match reminders and rank updates.";
+    dom.notificationMeta.textContent = "Sign in to see match reminders, active special picks, special feature results, and rank updates.";
     dom.notificationList.innerHTML = `
       <div class="notification-empty">
-        Log in with your player name first, then open the bell to see match reminders and leaderboard changes.
+        Log in with your player name first, then open the bell to see match reminders, active special picks, special feature results, and leaderboard changes.
       </div>
     `;
     return;
@@ -1259,7 +1664,7 @@ function renderNotifications() {
   if (!entries.length) {
     dom.notificationList.innerHTML = `
       <div class="notification-empty">
-        Your notifications will appear here when you have a same-day match reminder or a leaderboard rank change.
+        Your notifications will appear here when you have a same-day match reminder, an active Round 3 special pick, a special feature result, or a leaderboard rank change.
       </div>
     `;
     return;
@@ -1576,6 +1981,7 @@ function renderMatchCard(match, player) {
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const prediction = player ? getMatchPrediction(player.id, match.id) : null;
   const isLocked = !isOpen;
+  const hasSpecialFeature = isSpecialFeatureMatch(match);
   const buttonLabel = !isOpen
     ? "Prediction Closed"
     : prediction
@@ -1622,6 +2028,7 @@ function renderMatchCard(match, player) {
         data-match-id="${escapeHtml(match.id)}"
         data-initial-score-a="${escapeHtml(prediction ? prediction.predictedScoreA : "")}"
         data-initial-score-b="${escapeHtml(prediction ? prediction.predictedScoreB : "")}"
+        data-initial-special-feature="${escapeHtml(prediction?.specialFeature || "")}"
       >
         <div class="score-inputs">
           <label class="score-box">
@@ -1634,6 +2041,7 @@ function renderMatchCard(match, player) {
             <input type="number" min="0" step="1" name="predictedScoreB" value="${prediction ? prediction.predictedScoreB : ""}" ${isLocked ? "disabled" : ""}>
           </label>
         </div>
+        ${hasSpecialFeature ? renderSpecialFeaturePicker(match, prediction, isOpen) : ""}
         <div class="inline-actions">
           <button class="primary-button" type="submit" data-role="match-submit" ${isLocked ? "disabled" : ""}>${buttonLabel}</button>
           <span class="deadline-note">Deadline: ${escapeHtml(formatDateTime(match.predictionDeadline))}</span>
@@ -1642,7 +2050,7 @@ function renderMatchCard(match, player) {
 
       ${prediction ? `
         <p class="prediction-meta">
-          ${match.isFinished ? `Prediction submitted - earned ${prediction.points} pts` : "Prediction saved. You can update it until the deadline."}
+          ${escapeHtml(getMatchPredictionMetaText(prediction, match))}
         </p>
       ` : `<p class="prediction-meta">No prediction saved for this player yet.</p>`}
 
@@ -1656,6 +2064,96 @@ function renderMatchCard(match, player) {
       ` : ""}
     </article>
   `;
+}
+
+function renderSpecialFeaturePicker(match, prediction, isOpen) {
+  const selectedFeature = normalizeSpecialFeature(prediction?.specialFeature);
+
+  return `
+    <div class="special-feature-panel">
+      <div class="special-feature-header">
+        <div>
+          <strong>Round 3 Special Pick</strong>
+          <p class="deadline-note">Use each feature once across the final group-stage round. Pick another one to switch instantly, or click the active one again to remove it.</p>
+        </div>
+        <div class="chip-row">
+          <span class="chip special-feature-scope">Round 3 only</span>
+          ${!isOpen ? `<span class="chip special-feature-lock-chip">${renderLockIcon()} Locked</span>` : ""}
+        </div>
+      </div>
+      <input type="hidden" name="specialFeature" value="${escapeHtml(selectedFeature)}">
+      <div class="special-feature-list" role="group" aria-label="Special prediction features">
+        ${SPECIAL_FEATURE_KEYS.map((featureKey) => {
+          const feature = SPECIAL_FEATURES[featureKey];
+          return `
+            <button
+              class="special-feature-button ${selectedFeature === featureKey ? "is-active" : ""} ${!isOpen ? "is-locked" : ""}"
+              type="button"
+              data-action="toggle-special-feature"
+              data-role="special-feature-button"
+              data-feature="${escapeHtml(featureKey)}"
+              aria-pressed="${selectedFeature === featureKey ? "true" : "false"}"
+              ${!isOpen ? "disabled" : ""}
+            >
+              ${!isOpen ? `<span class="special-feature-lock-mark" aria-hidden="true">${renderLockIcon()}</span>` : ""}
+              <span class="special-feature-symbol" aria-hidden="true">${renderSpecialFeatureIcon(featureKey)}</span>
+              <span class="special-feature-copy">
+                <strong>${escapeHtml(feature.label)}</strong>
+                <span>${escapeHtml(feature.description)}</span>
+              </span>
+            </button>
+          `;
+        }).join("")}
+      </div>
+      <p class="special-feature-summary" data-role="special-feature-summary"></p>
+    </div>
+  `;
+}
+
+function renderSpecialFeatureIcon(featureKey) {
+  if (featureKey === "doublePick") {
+    return `<span class="special-feature-text-icon">X2</span>`;
+  }
+
+  if (featureKey === "goalRush") {
+    return `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle cx="12" cy="12" r="7.25" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <path d="m12 8.65 2.35 1.7-.9 2.75h-2.9l-.9-2.75L12 8.65Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="m9.55 10.35-2.55-.3m7.45.3 2.55-.3m-6.35 3.05-1.45 2.25m5.6-2.25 1.45 2.25" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    `;
+  }
+
+  return `
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="m12 3 2.05 4.15 4.58.67-3.31 3.23.78 4.56L12 13.45 7.9 15.61l.78-4.56-3.31-3.23 4.58-.67L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="12" cy="10.4" r="1.1" fill="currentColor"/>
+    </svg>
+  `;
+}
+
+function getMatchPredictionMetaText(prediction, match) {
+  const featureLabel = isSpecialFeatureMatch(match)
+    ? getPredictionFeatureLabel(prediction.specialFeature)
+    : "";
+
+  if (!match.isFinished) {
+    return featureLabel
+      ? `Prediction saved. ${featureLabel} is selected for this match until the deadline.`
+      : "Prediction saved. You can update it until the deadline.";
+  }
+
+  const parts = [`Prediction submitted - earned ${prediction.points || 0} pts`];
+  const pointsBreakdown = getMatchPointsBreakdownText(prediction);
+  if (pointsBreakdown) {
+    parts.push(pointsBreakdown);
+  }
+  if (featureLabel) {
+    parts.push(`Feature: ${featureLabel}`);
+  }
+
+  return parts.join(" • ");
 }
 
 function renderGroups() {
@@ -1780,26 +2278,119 @@ function syncMatchFormState(form) {
     return;
   }
 
+  const player = getActivePlayer();
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const initialScoreA = String(form.dataset.initialScoreA || "");
   const initialScoreB = String(form.dataset.initialScoreB || "");
+  const initialSpecialFeature = normalizeSpecialFeature(form.dataset.initialSpecialFeature);
   const currentScoreA = String(form.elements.predictedScoreA?.value || "").trim();
   const currentScoreB = String(form.elements.predictedScoreB?.value || "").trim();
+  const specialFeatureInput = form.querySelector('input[name="specialFeature"]');
+  const currentSpecialFeature = normalizeSpecialFeature(specialFeatureInput?.value);
   const hasSavedPrediction = initialScoreA !== "" && initialScoreB !== "";
   const isDirty = hasSavedPrediction && (
     currentScoreA !== initialScoreA
     || currentScoreB !== initialScoreB
+    || currentSpecialFeature !== initialSpecialFeature
   );
 
   submitButton.disabled = !isOpen;
   if (!isOpen) {
     submitButton.textContent = "Prediction Closed";
+  } else {
+    submitButton.textContent = hasSavedPrediction && !isDirty
+      ? "Update Prediction"
+      : "Submit Prediction";
+  }
+
+  if (!isSpecialFeatureMatch(match)) {
     return;
   }
 
-  submitButton.textContent = hasSavedPrediction && !isDirty
-    ? "Update Prediction"
-    : "Submit Prediction";
+  const savedUsage = player ? getPlayerSpecialFeatureUsage(player.id) : new Map();
+  const currentUsage = getCurrentSpecialFeatureSelections();
+  const visibleMatchIds = new Set(
+    Array.from(document.querySelectorAll(".match-form"))
+      .map((item) => String(item?.dataset?.matchId || ""))
+      .filter(Boolean)
+  );
+  savedUsage.forEach((usedMatchId, featureKey) => {
+    if (!visibleMatchIds.has(usedMatchId) && !currentUsage.has(featureKey)) {
+      currentUsage.set(featureKey, usedMatchId);
+    }
+  });
+
+  const featureButtons = Array.from(form.querySelectorAll('[data-role="special-feature-button"]'));
+  featureButtons.forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const featureKey = normalizeSpecialFeature(button.dataset.feature);
+    const isActive = featureKey === currentSpecialFeature;
+    const usedMatchId = currentUsage.get(featureKey);
+    const featureUsedElsewhere = Boolean(usedMatchId && usedMatchId !== matchId);
+    const shouldDisable = !player || !isOpen || featureUsedElsewhere;
+
+    button.disabled = shouldDisable;
+    button.classList.toggle("is-active", isActive);
+    button.classList.toggle("is-disabled", shouldDisable && !isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+
+  const summary = form.querySelector('[data-role="special-feature-summary"]');
+  if (summary) {
+    summary.textContent = getSpecialFeatureSummaryText(currentSpecialFeature, currentUsage, matchId, isOpen, Boolean(player));
+  }
+}
+
+function getSpecialFeatureSummaryText(currentSpecialFeature, usageMap, matchId, isOpen, hasPlayer) {
+  if (!hasPlayer) {
+    return "Log in to choose a special pick for this Round 3 match.";
+  }
+
+  if (!isOpen) {
+    return currentSpecialFeature
+      ? `${getPredictionFeatureLabel(currentSpecialFeature)} is locked for this match.`
+      : "Special picks are locked because the deadline has passed.";
+  }
+
+  if (currentSpecialFeature) {
+    return `${getPredictionFeatureLabel(currentSpecialFeature)} is active for this match.`;
+  }
+
+  const usedFeatures = SPECIAL_FEATURE_KEYS
+    .filter((featureKey) => {
+      const usedMatchId = usageMap.get(featureKey);
+      return Boolean(usedMatchId && usedMatchId !== matchId);
+    })
+    .map((featureKey) => getPredictionFeatureLabel(featureKey));
+
+  if (usedFeatures.length) {
+    return `${usedFeatures.join(", ")} already used on other Round 3 matches.`;
+  }
+
+  return "Pick one optional feature for this match.";
+}
+
+function renderLockIcon() {
+  return `
+    <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <path d="M7.5 10.25V8.5a4.5 4.5 0 1 1 9 0v1.75h.5A1.75 1.75 0 0 1 18.75 12v7A1.75 1.75 0 0 1 17 20.75H7A1.75 1.75 0 0 1 5.25 19v-7A1.75 1.75 0 0 1 7 10.25h.5Zm1.5 0h6V8.5a3 3 0 1 0-6 0v1.75Z" fill="currentColor"/>
+    </svg>
+  `;
+}
+
+function getMatchPointsBreakdownText(prediction) {
+  const basePoints = Number(prediction.basePoints || 0);
+  const specialBonusPoints = Number(prediction.specialBonusPoints || 0);
+  const feature = getSpecialFeature(prediction.specialFeature);
+
+  if (!feature) {
+    return `Base ${basePoints}`;
+  }
+
+  return `Base ${basePoints} + ${feature.label} ${specialBonusPoints}`;
 }
 
 function renderLeaderboard() {
@@ -1814,6 +2405,7 @@ function renderLeaderboard() {
       player.name,
       player.totalPoints,
       player.matchPoints,
+      player.specialPoints,
       player.groupPoints,
       player.exactScores,
       player.lastPredictionTime ? formatDateTime(player.lastPredictionTime) : "No predictions yet"
@@ -1831,7 +2423,7 @@ function renderLeaderboard() {
   if (!leaderboard.length) {
     dom.leaderboardBody.innerHTML = `
       <tr>
-        <td colspan="7"><div class="empty-state">No players match the search yet.</div></td>
+        <td colspan="8"><div class="empty-state">No players match the search yet.</div></td>
       </tr>
     `;
     return;
@@ -1843,6 +2435,7 @@ function renderLeaderboard() {
       <td class="table-player">${escapeHtml(player.name)}</td>
       <td>${player.totalPoints}</td>
       <td>${player.matchPoints}</td>
+      <td>${player.specialPoints}</td>
       <td>${player.groupPoints}</td>
       <td>${player.exactScores}</td>
       <td>${escapeHtml(player.lastPredictionTime ? formatDateTime(player.lastPredictionTime) : "No predictions yet")}</td>
@@ -1880,8 +2473,16 @@ function renderHistory() {
       submittedAt: prediction.submittedAt,
       title: `${prediction.playerName} • ${match.teamA} vs ${match.teamB}`,
       predictionText: `${prediction.predictedScoreA} - ${prediction.predictedScoreB}`,
+      featureText: isSpecialFeatureMatch(match)
+        ? (
+          getPredictionFeatureLabel(prediction.specialFeature)
+            ? `Feature: ${getPredictionFeatureLabel(prediction.specialFeature)}`
+            : "Feature: None"
+        )
+        : "",
       actualText: match.actualScoreA !== null && match.actualScoreB !== null ? `${match.actualScoreA} - ${match.actualScoreB}` : "Pending",
       points: prediction.points || 0,
+      pointsDetail: match.isFinished ? getMatchPointsBreakdownText(prediction) : "",
       isPublic: Boolean(match.isFinished && match.actualScoreA !== null && match.actualScoreB !== null),
       status: getMatchHistoryStatus(prediction, match)
     };
@@ -1899,10 +2500,12 @@ function renderHistory() {
       submittedAt: prediction.submittedAt,
       title: `${prediction.playerName} • ${group.name}`,
       predictionText: `${prediction.predictedFirst} / ${prediction.predictedSecond} / ${prediction.predictedThird || "-"} • Best third: ${prediction.predictedThirdQualifies ? "Yes" : "No"}`,
+      featureText: "",
       actualText: isGroupResultReady(group)
         ? `${group.actualFirst} / ${group.actualSecond} / ${group.actualThird} • Best third: ${group.actualThirdQualifies ? "Yes" : "No"}`
         : "Pending",
       points: prediction.points || 0,
+      pointsDetail: "",
       isPublic: isGroupResultReady(group),
       status: getGroupHistoryStatus(prediction, group)
     };
@@ -1925,7 +2528,9 @@ function renderHistory() {
         <strong class="history-title">${escapeHtml(entry.title)}</strong>
         <p class="history-meta">
           Predicted: ${escapeHtml(entry.predictionText)}<br>
+          ${entry.featureText ? `${escapeHtml(entry.featureText)}<br>` : ""}
           Actual: ${escapeHtml(entry.actualText)}<br>
+          ${entry.pointsDetail ? `${escapeHtml(entry.pointsDetail)}<br>` : ""}
           Submitted at: ${escapeHtml(formatDateTime(entry.submittedAt))}
         </p>
       </div>
@@ -1962,6 +2567,220 @@ function renderHistoryPlayerFilter() {
   }
 }
 
+function renderChat() {
+  if (
+    !dom.chatShell
+    || !dom.chatToggleButton
+    || !dom.chatToggleBadge
+    || !dom.chatPanel
+    || !dom.chatMessages
+    || !dom.chatForm
+    || !dom.chatMeta
+    || !dom.chatCountChip
+    || !dom.chatInput
+    || !dom.chatCharCount
+    || !dom.chatEmojiToggle
+    || !dom.chatEmojiTray
+  ) {
+    return;
+  }
+
+  const player = getActivePlayer();
+  const messages = state.chatMessages.slice().sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const shouldAutoScroll = isScrolledNearBottom(dom.chatMessages);
+  const latestMessage = messages[messages.length - 1] || null;
+  const latestFromActivePlayer = Boolean(player && latestMessage?.playerId === player.id);
+  const unreadCount = uiState.chatOpen
+    ? 0
+    : getChatUnreadCount(player?.id || "", messages);
+
+  if (player && uiState.chatOpen) {
+    markChatMessagesAsSeen(player.id, messages);
+  }
+
+  dom.chatShell.classList.toggle("is-open", uiState.chatOpen);
+  dom.chatToggleButton.setAttribute("aria-expanded", String(uiState.chatOpen));
+  dom.chatPanel.classList.toggle("hidden", !uiState.chatOpen);
+  dom.chatToggleBadge.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+  dom.chatToggleBadge.classList.toggle("hidden", unreadCount === 0);
+  dom.chatEmojiToggle.setAttribute("aria-expanded", String(uiState.chatEmojiOpen));
+  dom.chatEmojiTray.classList.toggle("hidden", !uiState.chatEmojiOpen);
+  dom.chatEmojiTray.innerHTML = renderChatEmojiButtons();
+
+  dom.chatCountChip.textContent = unreadCount
+    ? `${unreadCount} new`
+    : `${messages.length} message${messages.length === 1 ? "" : "s"}`;
+  dom.chatMeta.textContent = player
+    ? messages.length
+      ? `Signed in as ${player.name}. Latest message ${formatChatTime(latestMessage.createdAt)}.`
+      : `Signed in as ${player.name}. Start the conversation.`
+    : "Log in to send messages. Guests can still read the chat.";
+
+  dom.chatMessages.innerHTML = messages.length
+    ? messages.map((message) => renderChatMessage(message, player)).join("")
+    : `
+      <div class="chat-empty">
+        No chat messages yet. Be the first player to start the conversation.
+      </div>
+    `;
+
+  dom.chatInput.disabled = !player;
+  dom.chatInput.placeholder = player
+    ? "Write a message to the other players..."
+    : "Log in first to unlock chat";
+  if (!player) {
+    dom.chatInput.value = "";
+    uiState.chatEmojiOpen = false;
+    dom.chatEmojiToggle.setAttribute("aria-expanded", "false");
+    dom.chatEmojiTray.classList.add("hidden");
+  }
+
+  const chatSubmitButton = dom.chatForm.querySelector('button[type="submit"]');
+  if (chatSubmitButton instanceof HTMLButtonElement) {
+    chatSubmitButton.disabled = !player;
+  }
+  dom.chatEmojiToggle.disabled = !player;
+
+  renderChatCharacterCount();
+
+  if (shouldAutoScroll || latestFromActivePlayer) {
+    window.requestAnimationFrame(() => {
+      dom.chatMessages.scrollTop = dom.chatMessages.scrollHeight;
+    });
+  }
+}
+
+function renderChatMessage(message, activePlayer) {
+  const isOwnMessage = Boolean(activePlayer && message.playerId === activePlayer.id);
+  const reactionBarMarkup = renderChatReactionBar(message, activePlayer);
+
+  return `
+    <article class="chat-message ${isOwnMessage ? "chat-message-own" : ""}">
+      <div class="chat-message-topline">
+        <strong>${escapeHtml(isOwnMessage ? `${message.playerName} (You)` : message.playerName)}</strong>
+        <span>${escapeHtml(formatChatTime(message.createdAt))}</span>
+      </div>
+      <p class="chat-message-copy">${escapeHtml(message.text)}</p>
+      ${reactionBarMarkup}
+    </article>
+  `;
+}
+
+function renderChatCharacterCount() {
+  if (!dom.chatInput || !dom.chatCharCount) {
+    return;
+  }
+
+  const currentLength = String(dom.chatInput.value || "").length;
+  dom.chatCharCount.textContent = `${currentLength} / ${CHAT_MAX_MESSAGE_LENGTH}`;
+  dom.chatCharCount.classList.toggle("is-limit", currentLength >= CHAT_MAX_MESSAGE_LENGTH);
+}
+
+function renderChatEmojiButtons() {
+  return CHAT_EMOJIS.map((emoji) => `
+    <button class="chat-emoji-button" type="button" data-action="insert-chat-emoji" data-emoji="${escapeHtml(emoji)}">
+      <span aria-hidden="true">${escapeHtml(emoji)}</span>
+    </button>
+  `).join("");
+}
+
+function toggleChatPanel() {
+  uiState.chatOpen = !uiState.chatOpen;
+  if (!uiState.chatOpen) {
+    uiState.chatEmojiOpen = false;
+  }
+  renderChat();
+}
+
+function closeChatPanel() {
+  if (!uiState.chatOpen) {
+    return;
+  }
+
+  uiState.chatOpen = false;
+  uiState.chatEmojiOpen = false;
+  renderChat();
+}
+
+function toggleEmojiPicker() {
+  if (!getActivePlayer()) {
+    showToast("Log in first to use emojis in chat", "error");
+    return;
+  }
+
+  uiState.chatEmojiOpen = !uiState.chatEmojiOpen;
+  renderChat();
+}
+
+function insertChatEmoji(button) {
+  if (!(button instanceof HTMLButtonElement) || !dom.chatInput || dom.chatInput.disabled) {
+    return;
+  }
+
+  const emoji = String(button.dataset.emoji || "");
+  if (!emoji) {
+    return;
+  }
+
+  const selectionStart = dom.chatInput.selectionStart ?? dom.chatInput.value.length;
+  const selectionEnd = dom.chatInput.selectionEnd ?? dom.chatInput.value.length;
+  const currentValue = String(dom.chatInput.value || "");
+  const nextValue = `${currentValue.slice(0, selectionStart)}${emoji}${currentValue.slice(selectionEnd)}`.slice(0, CHAT_MAX_MESSAGE_LENGTH);
+  const nextCursor = Math.min(selectionStart + emoji.length, nextValue.length);
+
+  dom.chatInput.value = nextValue;
+  dom.chatInput.focus();
+  dom.chatInput.setSelectionRange(nextCursor, nextCursor);
+  renderChatCharacterCount();
+}
+
+function renderChatReactionBar(message, activePlayer) {
+  const activePlayerId = String(activePlayer?.id || "");
+  const canReact = Boolean(activePlayerId) && activePlayerId !== String(message.playerId || "");
+  const items = getChatReactionItems(message, activePlayerId);
+  const visibleItems = items.filter((item) => item.count > 0 || canReact);
+
+  if (!visibleItems.length) {
+    return "";
+  }
+
+  return `
+    <div class="chat-reaction-bar">
+      ${visibleItems.map((item) => `
+        <button
+          class="chat-reaction-chip ${item.isActive ? "is-active" : ""} ${item.count > 0 ? "has-count" : ""}"
+          type="button"
+          data-action="toggle-chat-reaction"
+          data-message-id="${escapeHtml(message.id)}"
+          data-emoji="${escapeHtml(item.emoji)}"
+          ${canReact ? "" : "disabled"}
+          aria-pressed="${item.isActive ? "true" : "false"}"
+          aria-label="${escapeHtml(`React with ${item.emoji}`)}"
+        >
+          <span class="chat-reaction-emoji" aria-hidden="true">${escapeHtml(item.emoji)}</span>
+          ${item.count > 0 ? `<span class="chat-reaction-count">${item.count}</span>` : ""}
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function getChatReactionItems(message, activePlayerId = "") {
+  const counts = new Map();
+  const reactions = normalizeChatReactions(message?.reactions);
+  const activeReaction = reactions.find((reaction) => reaction.playerId === activePlayerId)?.emoji || "";
+
+  reactions.forEach((reaction) => {
+    counts.set(reaction.emoji, Number(counts.get(reaction.emoji) || 0) + 1);
+  });
+
+  return CHAT_REACTION_EMOJIS.map((emoji) => ({
+    emoji,
+    count: Number(counts.get(emoji) || 0),
+    isActive: activeReaction === emoji
+  }));
+}
+
 function toggleNotifications() {
   uiState.notificationsOpen = !uiState.notificationsOpen;
   renderNotifications();
@@ -1978,9 +2797,11 @@ function closeNotifications() {
 
 function getPlayerNotificationEntries(playerId, sourceState = state) {
   const reminderEntries = getTodayPredictionReminderEntries(playerId, sourceState);
+  const activeFeatureEntries = getActiveSpecialFeatureNotificationEntries(playerId, sourceState);
   const rankChangeEntry = getRankChangeNotificationEntry(playerId, sourceState);
+  const specialFeatureEntries = getSpecialFeatureNotificationEntries(playerId, sourceState);
 
-  return [rankChangeEntry, ...reminderEntries]
+  return [rankChangeEntry, ...activeFeatureEntries, ...specialFeatureEntries, ...reminderEntries]
     .filter(Boolean)
     .sort((a, b) => {
       const aPriority = Number(a.sortPriority || 0);
@@ -2023,6 +2844,146 @@ function getTodayPredictionReminderEntries(playerId, sourceState = state) {
       persistent: true,
       sortPriority: 3
     }));
+}
+
+function getActiveSpecialFeatureNotificationEntries(playerId, sourceState = state) {
+  return sourceState.matchPredictions
+    .filter((prediction) => prediction.playerId === playerId)
+    .map((prediction) => {
+      const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
+      if (!match || !isSpecialFeatureMatch(match) || match.isFinished) {
+        return null;
+      }
+
+      const featureKey = normalizeSpecialFeature(prediction.specialFeature);
+      if (!featureKey) {
+        return null;
+      }
+
+      return buildActiveSpecialFeatureNotificationEntry(prediction, match, featureKey);
+    })
+    .filter(Boolean);
+}
+
+function buildActiveSpecialFeatureNotificationEntry(prediction, match, featureKey) {
+  const feature = getSpecialFeature(featureKey);
+  if (!feature) {
+    return null;
+  }
+
+  return {
+    id: [
+      "special-feature-active",
+      String(prediction.playerId),
+      String(match.id),
+      featureKey
+    ].join(":"),
+    resolvedAt: prediction.submittedAt || match.predictionDeadline || match.matchDate || new Date().toISOString(),
+    title: `${feature.label} activated`,
+    context: `${match.teamA} vs ${match.teamB}`,
+    summary: `Your ${feature.label} is active for this match.`,
+    actual: `Round: ${match.round} • Deadline: ${formatDateTime(match.predictionDeadline)}`,
+    status: {
+      label: "Feature Active",
+      className: "status-feature"
+    },
+    timeLabel: "Activated",
+    sortPriority: 5
+  };
+}
+
+function getSpecialFeatureNotificationEntries(playerId, sourceState = state) {
+  return sourceState.matchPredictions
+    .filter((prediction) => prediction.playerId === playerId)
+    .map((prediction) => {
+      const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
+      if (!match || !isSpecialFeatureMatch(match)) {
+        return null;
+      }
+
+      const featureKey = normalizeSpecialFeature(prediction.specialFeature);
+      if (!featureKey || !match.isFinished || match.actualScoreA === null || match.actualScoreB === null) {
+        return null;
+      }
+
+      return buildSpecialFeatureNotificationEntry(prediction, match, featureKey);
+    })
+    .filter(Boolean);
+}
+
+function buildSpecialFeatureNotificationEntry(prediction, match, featureKey) {
+  const feature = getSpecialFeature(featureKey);
+  if (!feature) {
+    return null;
+  }
+
+  const resolvedAt = getMatchResultResolvedAt(match);
+  const resultText = `${match.actualScoreA} - ${match.actualScoreB}`;
+
+  return {
+    id: [
+      "special-feature",
+      String(prediction.playerId),
+      String(match.id),
+      featureKey,
+      String(match.actualScoreA),
+      String(match.actualScoreB),
+      String(resolvedAt)
+    ].join(":"),
+    resolvedAt,
+    title: `${feature.label}: ${match.teamA} vs ${match.teamB}`,
+    context: `${match.round} • ${getMatchGroupLabel(match)}`,
+    summary: getSpecialFeatureNotificationSummary(featureKey, prediction, match),
+    actual: `Actual: ${resultText} • ${getMatchPointsBreakdownText(prediction)} • Total ${prediction.points || 0} pts`,
+    status: getSpecialFeatureNotificationStatus(featureKey, prediction),
+    timeLabel: "Result",
+    sortPriority: 4
+  };
+}
+
+function getSpecialFeatureNotificationSummary(featureKey, prediction, match) {
+  const basePoints = Number(prediction.basePoints || 0);
+  const totalGoals = Number(match.actualScoreA) + Number(match.actualScoreB);
+
+  if (featureKey === "doublePick") {
+    return basePoints > 0
+      ? "Double Pick activated! Your match points were doubled."
+      : "Double Pick was active, but your prediction earned 0 points, so no bonus was added.";
+  }
+
+  if (featureKey === "goalRush") {
+    return basePoints > 0
+      ? `Goal Rush activated! You earned +${totalGoals} bonus points from ${totalGoals} total goals.`
+      : `Goal Rush activated! You earned +${totalGoals} bonus points from match goals.`;
+  }
+
+  if (featureKey === "perfectBoost") {
+    return isExactScore(prediction, match)
+      ? "Perfect Boost activated! Exact score achieved, you earned 8 points instead of 6."
+      : "Perfect Boost was active, but the exact score was not correct, so normal scoring was applied.";
+  }
+
+  return "Your special feature was applied to this match result.";
+}
+
+function getSpecialFeatureNotificationStatus(featureKey, prediction) {
+  const earnedBonus = Number(prediction.specialBonusPoints || 0) > 0;
+
+  if (featureKey === "goalRush") {
+    return {
+      label: "Goal Rush",
+      className: "status-feature"
+    };
+  }
+
+  return {
+    label: getPredictionFeatureLabel(featureKey),
+    className: earnedBonus ? "status-feature" : "status-wrong"
+  };
+}
+
+function getMatchResultResolvedAt(match) {
+  return match.resultUpdatedAt || match.matchDate || new Date().toISOString();
 }
 
 function getRankChangeNotificationEntry(playerId, sourceState = state) {
@@ -2131,6 +3092,37 @@ function markPlayerNotificationsAsRead(playerId, entryIds) {
   }
 
   sessionState.notificationReadByPlayer[playerId] = nextIds;
+  saveSessionState();
+}
+
+function getChatUnreadCount(playerId, messages = state.chatMessages) {
+  if (!playerId) {
+    return messages.length;
+  }
+
+  const lastSeenAt = sessionState.chatLastSeenByPlayer?.[playerId] || null;
+  if (!lastSeenAt) {
+    return messages.filter((message) => message.playerId !== playerId).length;
+  }
+
+  const lastSeenTime = new Date(lastSeenAt).getTime();
+  return messages.filter((message) => (
+    message.playerId !== playerId
+    && new Date(message.createdAt).getTime() > lastSeenTime
+  )).length;
+}
+
+function markChatMessagesAsSeen(playerId, messages = state.chatMessages) {
+  if (!playerId || !messages.length) {
+    return;
+  }
+
+  const latestMessageAt = messages[messages.length - 1]?.createdAt || null;
+  if (!latestMessageAt || sessionState.chatLastSeenByPlayer?.[playerId] === latestMessageAt) {
+    return;
+  }
+
+  sessionState.chatLastSeenByPlayer[playerId] = latestMessageAt;
   saveSessionState();
 }
 
@@ -2392,6 +3384,7 @@ function recalculatePoints(sourceState = state) {
   sourceState.players.forEach((player) => {
     player.totalPoints = 0;
     player.matchPoints = 0;
+    player.specialPoints = 0;
     player.groupPoints = 0;
     player.exactScores = 0;
     player.lastPredictionTime = null;
@@ -2401,12 +3394,16 @@ function recalculatePoints(sourceState = state) {
   sourceState.matchPredictions.forEach((prediction) => {
     const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
     const player = playerMap.get(prediction.playerId);
-    prediction.points = match ? calculateMatchPredictionPoints(prediction, match) : 0;
+    const breakdown = match ? getMatchPredictionScoreBreakdown(prediction, match) : buildEmptyMatchScoreBreakdown();
+    prediction.basePoints = breakdown.basePoints;
+    prediction.specialBonusPoints = breakdown.specialBonusPoints;
+    prediction.points = breakdown.totalPoints;
     if (!player) {
       return;
     }
 
     player.matchPoints += prediction.points;
+    player.specialPoints += prediction.specialBonusPoints;
     player.totalPoints += prediction.points;
     if (match && isExactScore(prediction, match)) {
       player.exactScores += 1;
@@ -2430,11 +3427,46 @@ function recalculatePoints(sourceState = state) {
   });
 }
 
-function calculateMatchPredictionPoints(prediction, match) {
+function buildEmptyMatchScoreBreakdown() {
+  return {
+    basePoints: 0,
+    specialBonusPoints: 0,
+    totalPoints: 0
+  };
+}
+
+function getMatchPredictionScoreBreakdown(prediction, match) {
   if (!match.isFinished || match.actualScoreA === null || match.actualScoreB === null) {
-    return 0;
+    return buildEmptyMatchScoreBreakdown();
   }
 
+  const basePoints = calculateMatchPredictionBasePoints(prediction, match);
+  const specialFeature = isSpecialFeatureMatch(match)
+    ? normalizeSpecialFeature(prediction.specialFeature)
+    : "";
+  const totalGoals = Number(match.actualScoreA) + Number(match.actualScoreB);
+  let specialBonusPoints = 0;
+  let totalPoints = basePoints;
+
+  if (specialFeature === "doublePick" && basePoints > 0) {
+    specialBonusPoints = basePoints;
+    totalPoints = basePoints * 2;
+  } else if (specialFeature === "goalRush") {
+    specialBonusPoints = totalGoals;
+    totalPoints = basePoints + specialBonusPoints;
+  } else if (specialFeature === "perfectBoost" && isExactScore(prediction, match)) {
+    specialBonusPoints = 8 - MATCH_SCORING.exactScore;
+    totalPoints = 8;
+  }
+
+  return {
+    basePoints,
+    specialBonusPoints,
+    totalPoints
+  };
+}
+
+function calculateMatchPredictionBasePoints(prediction, match) {
   if (isExactScore(prediction, match)) {
     return MATCH_SCORING.exactScore;
   }
@@ -2489,12 +3521,40 @@ function getPlayerRank(playerId, sourceState = state) {
 }
 
 function getCurrentRoundLabel() {
-  const nextOpenMatch = state.matches
-    .slice()
-    .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate))
-    .find((match) => !match.isFinished);
+  const currentRoundMatch = getCurrentRoundMatch();
 
-  return nextOpenMatch ? nextOpenMatch.round : "Tournament complete";
+  return currentRoundMatch ? currentRoundMatch.round : "Tournament complete";
+}
+
+function getCurrentRoundMatch() {
+  const now = Date.now();
+  const sortedMatches = state.matches
+    .slice()
+    .sort((a, b) => new Date(a.matchDate) - new Date(b.matchDate));
+
+  const nextOpenPrediction = sortedMatches.find((match) => {
+    if (match.isFinished) {
+      return false;
+    }
+
+    return new Date(match.predictionDeadline).getTime() >= now;
+  });
+  if (nextOpenPrediction) {
+    return nextOpenPrediction;
+  }
+
+  const nextScheduledMatch = sortedMatches.find((match) => {
+    if (match.isFinished) {
+      return false;
+    }
+
+    return new Date(match.matchDate).getTime() >= now;
+  });
+  if (nextScheduledMatch) {
+    return nextScheduledMatch;
+  }
+
+  return sortedMatches.find((match) => !match.isFinished) || null;
 }
 
 function getActivePlayer() {
@@ -2706,7 +3766,7 @@ function getMatchHistoryStatus(prediction, match) {
     return { label: "Correct Score", className: "status-exact" };
   }
 
-  if (prediction.points === MATCH_SCORING.correctResult) {
+  if (Number(prediction.basePoints || 0) === MATCH_SCORING.correctResult) {
     return { label: "Correct Result", className: "status-winner" };
   }
 
@@ -2745,6 +3805,7 @@ function exportLeaderboard() {
     name: player.name,
     totalPoints: player.totalPoints,
     matchPoints: player.matchPoints,
+    specialPoints: player.specialPoints,
     groupPoints: player.groupPoints,
     exactScores: player.exactScores,
     lastPredictionTime: player.lastPredictionTime
@@ -3059,7 +4120,8 @@ function normalizeMatch(match, index, groupLookup) {
     predictionDeadline,
     actualScoreA,
     actualScoreB,
-    isFinished: Boolean(match.isFinished)
+    isFinished: Boolean(match.isFinished),
+    resultUpdatedAt: match.resultUpdatedAt ? String(match.resultUpdatedAt) : null
   };
 }
 
@@ -3209,8 +4271,53 @@ function formatCountdown(deadline) {
   return `${hours}h ${minutes}m ${seconds}s`;
 }
 
+function formatChatTime(value) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(value));
+}
+
 function normalizeName(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeChatMessageText(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CHAT_MAX_MESSAGE_LENGTH);
+}
+
+function containsBlockedChatLanguage(value) {
+  const normalized = normalizeChatModerationText(value);
+  if (!normalized.compact) {
+    return false;
+  }
+
+  return CHAT_BLOCKED_TERMS_EN.some((term) => normalized.compact.includes(term))
+    || CHAT_BLOCKED_TERMS_AR.some((term) => {
+      const compactTerm = normalizeChatModerationText(term).compact;
+      return compactTerm ? normalized.compact.includes(compactTerm) : false;
+    });
+}
+
+function normalizeChatModerationText(value) {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u064b-\u065f\u0670]/g, "")
+    .replace(/ـ/g, "")
+    .replace(/[إأآٱ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/[ؤئ]/g, "ي")
+    .replace(/ة/g, "ه");
+
+  return {
+    compact: normalized.replace(/[^a-z0-9\u0600-\u06ff]+/g, "")
+  };
 }
 
 function normalizePlayerPin(value) {
@@ -3229,11 +4336,99 @@ function normalizePlayer(player) {
     pin: normalizePlayerPin(player?.pin),
     totalPoints: Number(player?.totalPoints || 0),
     matchPoints: Number(player?.matchPoints || 0),
+    specialPoints: Number(player?.specialPoints || 0),
     groupPoints: Number(player?.groupPoints || 0),
     exactScores: Number(player?.exactScores || 0),
     createdAt: player?.createdAt || new Date().toISOString(),
     lastPredictionTime: player?.lastPredictionTime || null
   };
+}
+
+function normalizeChatMessages(messages) {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  return messages
+    .map(normalizeChatMessage)
+    .filter(Boolean)
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .slice(-CHAT_MAX_MESSAGES);
+}
+
+function normalizeChatMessage(message) {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
+
+  const playerName = String(message.playerName || "").trim();
+  const text = normalizeChatMessageText(message.text);
+  const createdAt = normalizeTimestamp(message.createdAt);
+  if (!playerName || !text || !createdAt) {
+    return null;
+  }
+
+  return {
+    id: String(message.id || createId("chat")),
+    playerId: String(message.playerId || ""),
+    playerName,
+    text,
+    createdAt,
+    reactions: normalizeChatReactions(message.reactions)
+  };
+}
+
+function normalizeChatReactions(reactions) {
+  if (!Array.isArray(reactions)) {
+    return [];
+  }
+
+  const dedupedReactions = new Map();
+
+  reactions
+    .map(normalizeChatReaction)
+    .filter(Boolean)
+    .forEach((reaction) => {
+      dedupedReactions.set(reaction.playerId, reaction);
+    });
+
+  return Array.from(dedupedReactions.values())
+    .sort((firstReaction, secondReaction) => new Date(firstReaction.reactedAt) - new Date(secondReaction.reactedAt));
+}
+
+function normalizeChatReaction(reaction) {
+  if (!reaction || typeof reaction !== "object") {
+    return null;
+  }
+
+  const playerId = String(reaction.playerId || "").trim();
+  const playerName = String(reaction.playerName || "").trim();
+  const emoji = String(reaction.emoji || "").trim();
+  const reactedAt = normalizeTimestamp(reaction.reactedAt);
+
+  if (!playerId || !playerName || !emoji || !reactedAt || !CHAT_REACTION_EMOJIS.includes(emoji)) {
+    return null;
+  }
+
+  return {
+    playerId,
+    playerName,
+    emoji,
+    reactedAt
+  };
+}
+
+function normalizeTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function isScrolledNearBottom(element) {
+  if (!(element instanceof HTMLElement)) {
+    return true;
+  }
+
+  return element.scrollHeight - element.scrollTop - element.clientHeight < 48;
 }
 
 function getInitials(value) {
