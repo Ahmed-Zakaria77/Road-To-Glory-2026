@@ -170,6 +170,21 @@ const persistence = {
   message: "Connecting to shared storage..."
 };
 
+const derivedStateCache = new WeakMap();
+const dateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+const chatTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit"
+});
+
 let state = createDefaultState();
 let sessionState = loadSessionState();
 
@@ -247,6 +262,97 @@ function createDefaultSessionState() {
     rankTrackingByPlayer: {},
     chatLastSeenByPlayer: {}
   };
+}
+
+function getDerivedState(sourceState = state) {
+  if (!sourceState || typeof sourceState !== "object") {
+    return {
+      playerById: new Map(),
+      matchById: new Map(),
+      groupById: new Map(),
+      matchPredictionByKey: new Map(),
+      groupPredictionByKey: new Map(),
+      matchPredictionsByPlayerId: new Map(),
+      groupPredictionsByPlayerId: new Map(),
+      leaderboard: [],
+      rankByPlayerId: new Map()
+    };
+  }
+
+  const cached = derivedStateCache.get(sourceState);
+  if (cached) {
+    return cached;
+  }
+
+  const playerById = new Map();
+  const matchById = new Map();
+  const groupById = new Map();
+  const matchPredictionByKey = new Map();
+  const groupPredictionByKey = new Map();
+  const matchPredictionsByPlayerId = new Map();
+  const groupPredictionsByPlayerId = new Map();
+
+  sourceState.players.forEach((player) => {
+    playerById.set(String(player.id), player);
+  });
+  sourceState.matches.forEach((match) => {
+    matchById.set(String(match.id), match);
+  });
+  sourceState.groups.forEach((group) => {
+    groupById.set(String(group.id), group);
+  });
+
+  sourceState.matchPredictions.forEach((prediction) => {
+    const playerId = String(prediction.playerId);
+    const matchId = String(prediction.matchId);
+    matchPredictionByKey.set(buildPredictionLookupKey(playerId, matchId), prediction);
+    appendLookupListValue(matchPredictionsByPlayerId, playerId, prediction);
+  });
+
+  sourceState.groupPredictions.forEach((prediction) => {
+    const playerId = String(prediction.playerId);
+    const groupId = String(prediction.groupId);
+    groupPredictionByKey.set(buildPredictionLookupKey(playerId, groupId), prediction);
+    appendLookupListValue(groupPredictionsByPlayerId, playerId, prediction);
+  });
+
+  const leaderboard = sourceState.players.slice().sort(comparePlayersForLeaderboard);
+  const rankByPlayerId = new Map(
+    leaderboard.map((player, index) => [String(player.id), index + 1])
+  );
+
+  const derived = {
+    playerById,
+    matchById,
+    groupById,
+    matchPredictionByKey,
+    groupPredictionByKey,
+    matchPredictionsByPlayerId,
+    groupPredictionsByPlayerId,
+    leaderboard,
+    rankByPlayerId
+  };
+
+  derivedStateCache.set(sourceState, derived);
+  return derived;
+}
+
+function invalidateDerivedState(sourceState = state) {
+  if (sourceState && typeof sourceState === "object") {
+    derivedStateCache.delete(sourceState);
+  }
+}
+
+function buildPredictionLookupKey(playerId, entityId) {
+  return `${String(playerId)}::${String(entityId)}`;
+}
+
+function appendLookupListValue(map, key, value) {
+  if (!map.has(key)) {
+    map.set(key, []);
+  }
+
+  map.get(key).push(value);
 }
 
 function normalizeNotificationReadByPlayer(rawValue) {
@@ -1504,20 +1610,18 @@ function isSpecialFeatureMatch(match) {
 }
 
 function getPlayerSpecialFeatureUsage(playerId, sourceState = state, excludeMatchId = "") {
+  const derived = getDerivedState(sourceState);
   const usage = new Map();
+  const predictions = derived.matchPredictionsByPlayerId.get(String(playerId)) || [];
 
-  sourceState.matchPredictions.forEach((prediction) => {
-    if (prediction.playerId !== playerId) {
-      return;
-    }
-
+  predictions.forEach((prediction) => {
     const matchId = String(prediction.matchId || "");
     if (excludeMatchId && matchId === String(excludeMatchId)) {
       return;
     }
 
     const featureKey = normalizeSpecialFeature(prediction.specialFeature);
-    const match = sourceState.matches.find((item) => String(item.id) === matchId);
+    const match = derived.matchById.get(matchId) || null;
     if (!featureKey || !isSpecialFeatureMatch(match)) {
       return;
     }
@@ -2257,12 +2361,32 @@ function renderGroupCard(group, player) {
 }
 
 function syncMatchFormStates() {
+  const player = getActivePlayer();
+  const savedUsage = player ? getPlayerSpecialFeatureUsage(player.id) : new Map();
+  const currentUsage = getCurrentSpecialFeatureSelections();
+  const visibleMatchIds = new Set(
+    Array.from(document.querySelectorAll(".match-form"))
+      .map((item) => String(item?.dataset?.matchId || ""))
+      .filter(Boolean)
+  );
+
+  savedUsage.forEach((usedMatchId, featureKey) => {
+    if (!visibleMatchIds.has(usedMatchId) && !currentUsage.has(featureKey)) {
+      currentUsage.set(featureKey, usedMatchId);
+    }
+  });
+
   document.querySelectorAll(".match-form").forEach((form) => {
-    syncMatchFormState(form);
+    syncMatchFormState(form, {
+      player,
+      savedUsage,
+      currentUsage,
+      visibleMatchIds
+    });
   });
 }
 
-function syncMatchFormState(form) {
+function syncMatchFormState(form, sharedContext = null) {
   if (!(form instanceof HTMLFormElement)) {
     return;
   }
@@ -2278,7 +2402,7 @@ function syncMatchFormState(form) {
     return;
   }
 
-  const player = getActivePlayer();
+  const player = sharedContext?.player ?? getActivePlayer();
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const initialScoreA = String(form.dataset.initialScoreA || "");
   const initialScoreB = String(form.dataset.initialScoreB || "");
@@ -2307,18 +2431,7 @@ function syncMatchFormState(form) {
     return;
   }
 
-  const savedUsage = player ? getPlayerSpecialFeatureUsage(player.id) : new Map();
-  const currentUsage = getCurrentSpecialFeatureSelections();
-  const visibleMatchIds = new Set(
-    Array.from(document.querySelectorAll(".match-form"))
-      .map((item) => String(item?.dataset?.matchId || ""))
-      .filter(Boolean)
-  );
-  savedUsage.forEach((usedMatchId, featureKey) => {
-    if (!visibleMatchIds.has(usedMatchId) && !currentUsage.has(featureKey)) {
-      currentUsage.set(featureKey, usedMatchId);
-    }
-  });
+  const currentUsage = sharedContext?.currentUsage ?? getCurrentSpecialFeatureSelections();
 
   const featureButtons = Array.from(form.querySelectorAll('[data-role="special-feature-button"]'));
   featureButtons.forEach((button) => {
@@ -2458,11 +2571,12 @@ function getRankBadgeClass(rank) {
 
 function renderHistory() {
   const activePlayer = getActivePlayer();
+  const derived = getDerivedState();
   const selectedPlayerId = dom.historyPlayerFilter.value;
   const isFilteredByPlayer = selectedPlayerId !== "all";
 
   const matchEntries = state.matchPredictions.map((prediction) => {
-    const match = state.matches.find((item) => String(item.id) === String(prediction.matchId));
+    const match = derived.matchById.get(String(prediction.matchId)) || null;
     if (!match) {
       return null;
     }
@@ -2489,7 +2603,7 @@ function renderHistory() {
   });
 
   const groupEntries = state.groupPredictions.map((prediction) => {
-    const group = state.groups.find((item) => String(item.id) === String(prediction.groupId));
+    const group = derived.groupById.get(String(prediction.groupId)) || null;
     if (!group) {
       return null;
     }
@@ -2847,10 +2961,12 @@ function getTodayPredictionReminderEntries(playerId, sourceState = state) {
 }
 
 function getActiveSpecialFeatureNotificationEntries(playerId, sourceState = state) {
-  return sourceState.matchPredictions
-    .filter((prediction) => prediction.playerId === playerId)
+  const derived = getDerivedState(sourceState);
+  const predictions = derived.matchPredictionsByPlayerId.get(String(playerId)) || [];
+
+  return predictions
     .map((prediction) => {
-      const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
+      const match = derived.matchById.get(String(prediction.matchId)) || null;
       if (!match || !isSpecialFeatureMatch(match) || match.isFinished) {
         return null;
       }
@@ -2893,10 +3009,12 @@ function buildActiveSpecialFeatureNotificationEntry(prediction, match, featureKe
 }
 
 function getSpecialFeatureNotificationEntries(playerId, sourceState = state) {
-  return sourceState.matchPredictions
-    .filter((prediction) => prediction.playerId === playerId)
+  const derived = getDerivedState(sourceState);
+  const predictions = derived.matchPredictionsByPlayerId.get(String(playerId)) || [];
+
+  return predictions
     .map((prediction) => {
-      const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
+      const match = derived.matchById.get(String(prediction.matchId)) || null;
       if (!match || !isSpecialFeatureMatch(match)) {
         return null;
       }
@@ -3380,6 +3498,8 @@ function getAdminRoundFilterValue(availableAdminRounds) {
 
 function recalculatePoints(sourceState = state) {
   const playerMap = new Map();
+  const matchById = new Map();
+  const groupById = new Map();
 
   sourceState.players.forEach((player) => {
     player.totalPoints = 0;
@@ -3390,9 +3510,15 @@ function recalculatePoints(sourceState = state) {
     player.lastPredictionTime = null;
     playerMap.set(player.id, player);
   });
+  sourceState.matches.forEach((match) => {
+    matchById.set(String(match.id), match);
+  });
+  sourceState.groups.forEach((group) => {
+    groupById.set(String(group.id), group);
+  });
 
   sourceState.matchPredictions.forEach((prediction) => {
-    const match = sourceState.matches.find((item) => String(item.id) === String(prediction.matchId));
+    const match = matchById.get(String(prediction.matchId)) || null;
     const player = playerMap.get(prediction.playerId);
     const breakdown = match ? getMatchPredictionScoreBreakdown(prediction, match) : buildEmptyMatchScoreBreakdown();
     prediction.basePoints = breakdown.basePoints;
@@ -3413,7 +3539,7 @@ function recalculatePoints(sourceState = state) {
   });
 
   sourceState.groupPredictions.forEach((prediction) => {
-    const group = sourceState.groups.find((item) => String(item.id) === String(prediction.groupId));
+    const group = groupById.get(String(prediction.groupId)) || null;
     const player = playerMap.get(prediction.playerId);
     prediction.points = group ? calculateGroupPredictionPoints(prediction, group) : 0;
     if (!player) {
@@ -3425,6 +3551,8 @@ function recalculatePoints(sourceState = state) {
     player.lastPredictionTime = getLatestTime(player.lastPredictionTime, prediction.submittedAt);
     prediction.playerName = player.name;
   });
+
+  invalidateDerivedState(sourceState);
 }
 
 function buildEmptyMatchScoreBreakdown() {
@@ -3497,27 +3625,25 @@ function calculateGroupPredictionPoints(prediction, group) {
   return 0;
 }
 
+function comparePlayersForLeaderboard(a, b) {
+  if (b.totalPoints !== a.totalPoints) {
+    return b.totalPoints - a.totalPoints;
+  }
+  if (b.exactScores !== a.exactScores) {
+    return b.exactScores - a.exactScores;
+  }
+  if (b.matchPoints !== a.matchPoints) {
+    return b.matchPoints - a.matchPoints;
+  }
+  return normalizeName(a.name).localeCompare(normalizeName(b.name));
+}
+
 function getLeaderboard(sourceState = state) {
-  return sourceState.players
-    .slice()
-    .sort((a, b) => {
-      if (b.totalPoints !== a.totalPoints) {
-        return b.totalPoints - a.totalPoints;
-      }
-      if (b.exactScores !== a.exactScores) {
-        return b.exactScores - a.exactScores;
-      }
-      if (b.matchPoints !== a.matchPoints) {
-        return b.matchPoints - a.matchPoints;
-      }
-      return normalizeName(a.name).localeCompare(normalizeName(b.name));
-    });
+  return getDerivedState(sourceState).leaderboard.slice();
 }
 
 function getPlayerRank(playerId, sourceState = state) {
-  const leaderboard = getLeaderboard(sourceState);
-  const index = leaderboard.findIndex((player) => player.id === playerId);
-  return index >= 0 ? index + 1 : null;
+  return getDerivedState(sourceState).rankByPlayerId.get(String(playerId)) || null;
 }
 
 function getCurrentRoundLabel() {
@@ -3558,15 +3684,19 @@ function getCurrentRoundMatch() {
 }
 
 function getActivePlayer() {
-  return state.players.find((player) => player.id === sessionState.activePlayerId) || null;
+  return getDerivedState().playerById.get(String(sessionState.activePlayerId || "")) || null;
 }
 
 function getMatchPrediction(playerId, matchId, sourceState = state) {
-  return sourceState.matchPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.matchId) === String(matchId)) || null;
+  return getDerivedState(sourceState).matchPredictionByKey.get(
+    buildPredictionLookupKey(playerId, matchId)
+  ) || null;
 }
 
 function getGroupPrediction(playerId, groupId, sourceState = state) {
-  return sourceState.groupPredictions.find((prediction) => prediction.playerId === playerId && String(prediction.groupId) === String(groupId)) || null;
+  return getDerivedState(sourceState).groupPredictionByKey.get(
+    buildPredictionLookupKey(playerId, groupId)
+  ) || null;
 }
 
 function getMatchFilters() {
@@ -3645,12 +3775,9 @@ function sortMatchesForDisplay(matches, player) {
 }
 
 function getPriorityMatchDay(matches, player) {
+  const derived = getDerivedState();
   const predictedMatchIds = player
-    ? new Set(
-      state.matchPredictions
-        .filter((prediction) => prediction.playerId === player.id)
-        .map((prediction) => String(prediction.matchId))
-    )
+    ? new Set((derived.matchPredictionsByPlayerId.get(String(player.id)) || []).map((prediction) => String(prediction.matchId)))
     : new Set();
 
   const candidateGroups = [
@@ -4197,13 +4324,7 @@ function getOutcome(scoreA, scoreB) {
 }
 
 function formatDateTime(value) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
+  return dateTimeFormatter.format(new Date(value));
 }
 
 function formatDateTimeLocal(value) {
@@ -4272,12 +4393,7 @@ function formatCountdown(deadline) {
 }
 
 function formatChatTime(value) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(value));
+  return chatTimeFormatter.format(new Date(value));
 }
 
 function normalizeName(value) {
