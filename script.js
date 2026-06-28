@@ -47,6 +47,14 @@ const MATCH_SCORING = {
   correctResult: 5
 };
 
+const KNOCKOUT_MATCH_SCORING = {
+  exactScore: 10,
+  correctResult: 7
+};
+
+const FINAL_GROUP_STAGE_ROUND = "Group Stage - Round 3";
+const ROUND_OF_32_ROUND = "Round of 32";
+
 const SPECIAL_FEATURES = {
   doublePick: {
     key: "doublePick",
@@ -65,11 +73,56 @@ const SPECIAL_FEATURES = {
     label: "Perfect Boost",
     shortLabel: "PB",
     description: "An exact score pays 8 points instead of 6."
+  },
+  riskMode: {
+    key: "riskMode",
+    label: "Risk Mode",
+    shortLabel: "RM",
+    description: "All In: correct outcome pays 15 points, wrong outcome deducts 15."
+  },
+  extraTimeHunter: {
+    key: "extraTimeHunter",
+    label: "Extra Time Hunter",
+    shortLabel: "ET",
+    description: "Earn +3 bonus points if the real match reaches extra time."
+  },
+  cleanSheetMaster: {
+    key: "cleanSheetMaster",
+    label: "Clean Sheet Master",
+    shortLabel: "CS",
+    description: "Pick one team to keep a clean sheet and earn +5 if it happens."
   }
 };
 
+const GROUP_STAGE_SPECIAL_FEATURE_KEYS = ["doublePick", "goalRush", "perfectBoost"];
+const ROUND_OF_32_SPECIAL_FEATURE_KEYS = ["riskMode", "extraTimeHunter", "cleanSheetMaster"];
 const SPECIAL_FEATURE_KEYS = Object.keys(SPECIAL_FEATURES);
-const FINAL_GROUP_STAGE_ROUND = "Group Stage - Round 3";
+const SPECIAL_FEATURE_SCOPE_CONFIGS = {
+  "group-stage-round-3": {
+    key: "group-stage-round-3",
+    title: "Round 3 Special Pick",
+    note: "Use each feature once across the final group-stage round. Pick another one to switch instantly, or click the active one again to remove it.",
+    scopeChip: "Round 3 only",
+    loginSummary: "Log in to choose a special pick for this Round 3 match.",
+    emptySummary: "Pick one optional feature for this match.",
+    usedSummarySuffix: "already used on other Round 3 matches.",
+    lockedEmptySummary: "Special picks are locked because the deadline has passed.",
+    usageErrorLabel: "Round 3 match",
+    featureKeys: GROUP_STAGE_SPECIAL_FEATURE_KEYS
+  },
+  "round-of-32": {
+    key: "round-of-32",
+    title: "Round of 32 Special Pick",
+    note: "Each feature can be used only once across the entire Round of 32. Activate only one feature per match, switch before the deadline, or click the active one again to remove it.",
+    scopeChip: "Round of 32 only",
+    loginSummary: "Log in to choose a special pick for this Round of 32 match.",
+    emptySummary: "Pick one optional feature for this Round of 32 match.",
+    usedSummarySuffix: "already used on other Round of 32 matches.",
+    lockedEmptySummary: "Round of 32 special picks are locked because the deadline has passed.",
+    usageErrorLabel: "Round of 32 match",
+    featureKeys: ROUND_OF_32_SPECIAL_FEATURE_KEYS
+  }
+};
 
 const GROUP_SCORING = {
   correctQualifiedTeams: 8,
@@ -94,7 +147,13 @@ const ROUND_FILTER_OPTIONS = [
 
 const ROUND_THEME_MAP = {
   "Group Stage - Round 2": "round-2",
-  "Group Stage - Round 3": "round-3"
+  "Group Stage - Round 3": "round-3",
+  "Round of 32": "knockout-finals",
+  "Round of 16": "knockout-finals",
+  "Quarter Finals": "knockout-finals",
+  "Semi Finals": "knockout-finals",
+  "Third Place Match": "knockout-finals",
+  "Final": "knockout-finals"
 };
 
 const scheduleSource = normalizeWorldCupData(
@@ -510,6 +569,8 @@ function mergeStoredMatchesWithSchedule(storedMatches) {
         ...defaultMatch,
         actualScoreA: storedMatch.actualScoreA ?? defaultMatch.actualScoreA,
         actualScoreB: storedMatch.actualScoreB ?? defaultMatch.actualScoreB,
+        actualPenaltyWinner: storedMatch.actualPenaltyWinner ?? defaultMatch.actualPenaltyWinner,
+        wentToExtraTime: Boolean(storedMatch.wentToExtraTime),
         isFinished: Boolean(storedMatch.isFinished),
         resultUpdatedAt: storedMatch.resultUpdatedAt ?? defaultMatch.resultUpdatedAt,
         teamALogo: storedMatch.teamALogo || defaultMatch.teamALogo,
@@ -532,7 +593,9 @@ function reconcilePredictions(nextState) {
       ...prediction,
       matchId: String(prediction.matchId),
       playerId: String(prediction.playerId),
+      predictedPenaltyWinner: normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner),
       specialFeature: normalizeSpecialFeature(prediction.specialFeature),
+      specialFeatureTarget: normalizeSpecialFeatureTarget(prediction.specialFeatureTarget),
       basePoints: Number(prediction.basePoints || 0),
       specialBonusPoints: Number(prediction.specialBonusPoints || 0)
     }));
@@ -1041,6 +1104,11 @@ function handleInput(event) {
   if (matchForm) {
     syncMatchFormState(matchForm);
   }
+
+  const adminMatchForm = event.target.closest(".admin-match-form");
+  if (adminMatchForm) {
+    syncAdminMatchFormState(adminMatchForm);
+  }
 }
 
 function handleChange(event) {
@@ -1053,6 +1121,16 @@ function handleChange(event) {
     uiState.adminRoundFilter = String(event.target.value || "all");
     renderAdmin();
     return;
+  }
+
+  const matchForm = event.target.closest(".match-form");
+  if (matchForm) {
+    syncMatchFormState(matchForm);
+  }
+
+  const adminMatchForm = event.target.closest(".admin-match-form");
+  if (adminMatchForm) {
+    syncAdminMatchFormState(adminMatchForm);
   }
 
   const groupForm = event.target.closest(".group-form");
@@ -1089,12 +1167,17 @@ function handleSpecialFeatureToggle(button) {
     return;
   }
 
-  const featureKey = normalizeSpecialFeature(button.dataset.feature);
+  const featureKey = normalizeSpecialFeatureForMatch(button.dataset.feature, match);
   if (!featureKey) {
     return;
   }
 
-  hiddenInput.value = hiddenInput.value === featureKey ? "" : featureKey;
+  const nextFeature = hiddenInput.value === featureKey ? "" : featureKey;
+  const targetSelect = form.querySelector('select[name="specialFeatureTarget"]');
+  hiddenInput.value = nextFeature;
+  if (targetSelect instanceof HTMLSelectElement && nextFeature !== "cleanSheetMaster") {
+    targetSelect.value = "";
+  }
   syncMatchFormStates();
 }
 
@@ -1195,8 +1278,14 @@ async function handleMatchPrediction(form) {
   const formData = new FormData(form);
   const predictedScoreA = parseScoreInput(formData.get("predictedScoreA"));
   const predictedScoreB = parseScoreInput(formData.get("predictedScoreB"));
+  const predictedPenaltyWinner = requiresKnockoutWinner(match, predictedScoreA, predictedScoreB)
+    ? normalizeKnockoutWinnerChoice(formData.get("predictedPenaltyWinner"))
+    : "";
   const specialFeature = isSpecialFeatureMatch(match)
-    ? normalizeSpecialFeature(formData.get("specialFeature"))
+    ? normalizeSpecialFeatureForMatch(formData.get("specialFeature"), match)
+    : "";
+  const specialFeatureTarget = specialFeature === "cleanSheetMaster"
+    ? normalizeSpecialFeatureTarget(formData.get("specialFeatureTarget"))
     : "";
 
   if (predictedScoreA === null || predictedScoreB === null) {
@@ -1204,9 +1293,19 @@ async function handleMatchPrediction(form) {
     return;
   }
 
+  if (requiresKnockoutWinner(match, predictedScoreA, predictedScoreB) && !predictedPenaltyWinner) {
+    showToast("Choose the penalty shootout winner for knockout draws", "error");
+    return;
+  }
+
+  if (specialFeature === "cleanSheetMaster" && !specialFeatureTarget) {
+    showToast("Choose which team will keep the clean sheet", "error");
+    return;
+  }
+
   const previousPrediction = getMatchPrediction(player.id, matchId);
   const hadExistingPrediction = Boolean(previousPrediction);
-  const previousSpecialFeature = normalizeSpecialFeature(previousPrediction?.specialFeature);
+  const previousSpecialFeature = normalizeSpecialFeatureForMatch(previousPrediction?.specialFeature, match);
   const now = new Date().toISOString();
   const result = await applySharedMutation((draftState) => {
     const draftPlayer = draftState.players.find((item) => item.id === player.id);
@@ -1230,7 +1329,9 @@ async function handleMatchPrediction(form) {
     if (existingPrediction) {
       existingPrediction.predictedScoreA = predictedScoreA;
       existingPrediction.predictedScoreB = predictedScoreB;
+      existingPrediction.predictedPenaltyWinner = predictedPenaltyWinner;
       existingPrediction.specialFeature = specialFeature;
+      existingPrediction.specialFeatureTarget = specialFeatureTarget;
       existingPrediction.submittedAt = now;
       existingPrediction.points = 0;
       existingPrediction.basePoints = 0;
@@ -1245,7 +1346,9 @@ async function handleMatchPrediction(form) {
       matchId,
       predictedScoreA,
       predictedScoreB,
+      predictedPenaltyWinner,
       specialFeature,
+      specialFeatureTarget,
       submittedAt: now,
       points: 0,
       basePoints: 0,
@@ -1485,7 +1588,12 @@ async function handleAdminMatchUpdate(form) {
   const deadlineRaw = String(formData.get("predictionDeadline") || "").trim();
   const actualScoreAValue = String(formData.get("actualScoreA") || "").trim();
   const actualScoreBValue = String(formData.get("actualScoreB") || "").trim();
+  const actualPenaltyWinnerRaw = formData.get("actualPenaltyWinner");
   const isFinished = formData.get("isFinished") === "on";
+  const wentToExtraTime = isKnockoutMatch(match) && (
+    formData.get("wentToExtraTime") === "on"
+    || Boolean(normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw))
+  );
 
   if (!matchDateRaw) {
     showToast("Match date is required", "error");
@@ -1496,6 +1604,9 @@ async function handleAdminMatchUpdate(form) {
   const predictionDeadline = deadlineRaw ? parseDateTimeLocal(deadlineRaw) : calculateDeadlineFromMatchDate(matchDate);
   const actualScoreA = actualScoreAValue === "" ? null : parseScoreInput(actualScoreAValue);
   const actualScoreB = actualScoreBValue === "" ? null : parseScoreInput(actualScoreBValue);
+  const actualPenaltyWinner = requiresKnockoutWinner(match, actualScoreA, actualScoreB)
+    ? normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw)
+    : "";
 
   if (!matchDate || !predictionDeadline) {
     showToast("Match date or deadline is invalid", "error");
@@ -1512,6 +1623,11 @@ async function handleAdminMatchUpdate(form) {
     return;
   }
 
+  if (isFinished && requiresKnockoutWinner(match, actualScoreA, actualScoreB) && !actualPenaltyWinner) {
+    showToast("Choose the penalty shootout winner for knockout draws", "error");
+    return;
+  }
+
   const result = await applySharedMutation((draftState) => {
     const draftMatch = draftState.matches.find((item) => String(item.id) === matchId);
     if (!draftMatch) {
@@ -1521,6 +1637,8 @@ async function handleAdminMatchUpdate(form) {
     const resultChanged = (
       draftMatch.actualScoreA !== actualScoreA
       || draftMatch.actualScoreB !== actualScoreB
+      || normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner) !== actualPenaltyWinner
+      || Boolean(draftMatch.wentToExtraTime) !== Boolean(wentToExtraTime)
       || draftMatch.isFinished !== isFinished
     );
     const nextResultReady = Boolean(isFinished && actualScoreA !== null && actualScoreB !== null);
@@ -1529,6 +1647,10 @@ async function handleAdminMatchUpdate(form) {
     draftMatch.predictionDeadline = predictionDeadline;
     draftMatch.actualScoreA = actualScoreA;
     draftMatch.actualScoreB = actualScoreB;
+    draftMatch.actualPenaltyWinner = (nextResultReady && requiresKnockoutWinner(draftMatch, actualScoreA, actualScoreB))
+      ? actualPenaltyWinner
+      : null;
+    draftMatch.wentToExtraTime = nextResultReady ? Boolean(wentToExtraTime) : false;
     draftMatch.isFinished = isFinished;
     if (nextResultReady && resultChanged) {
       draftMatch.resultUpdatedAt = new Date().toISOString();
@@ -1605,11 +1727,44 @@ function getSpecialFeature(featureKey) {
   return SPECIAL_FEATURES[normalizeSpecialFeature(featureKey)] || null;
 }
 
-function isSpecialFeatureMatch(match) {
-  return Boolean(match && match.round === FINAL_GROUP_STAGE_ROUND && match.group);
+function getSpecialFeatureScope(match) {
+  if (!match) {
+    return "";
+  }
+
+  if (match.round === FINAL_GROUP_STAGE_ROUND && match.group) {
+    return "group-stage-round-3";
+  }
+
+  if (match.round === ROUND_OF_32_ROUND) {
+    return "round-of-32";
+  }
+
+  return "";
 }
 
-function getPlayerSpecialFeatureUsage(playerId, sourceState = state, excludeMatchId = "") {
+function getSpecialFeatureScopeConfig(matchOrScope) {
+  const scopeKey = typeof matchOrScope === "string"
+    ? matchOrScope
+    : getSpecialFeatureScope(matchOrScope);
+
+  return SPECIAL_FEATURE_SCOPE_CONFIGS[scopeKey] || null;
+}
+
+function getMatchSpecialFeatureKeys(match) {
+  return getSpecialFeatureScopeConfig(match)?.featureKeys || [];
+}
+
+function normalizeSpecialFeatureForMatch(value, match) {
+  const featureKey = normalizeSpecialFeature(value);
+  return getMatchSpecialFeatureKeys(match).includes(featureKey) ? featureKey : "";
+}
+
+function isSpecialFeatureMatch(match) {
+  return Boolean(getSpecialFeatureScope(match));
+}
+
+function getPlayerSpecialFeatureUsage(playerId, scopeKey, sourceState = state, excludeMatchId = "") {
   const derived = getDerivedState(sourceState);
   const usage = new Map();
   const predictions = derived.matchPredictionsByPlayerId.get(String(playerId)) || [];
@@ -1620,9 +1775,9 @@ function getPlayerSpecialFeatureUsage(playerId, sourceState = state, excludeMatc
       return;
     }
 
-    const featureKey = normalizeSpecialFeature(prediction.specialFeature);
     const match = derived.matchById.get(matchId) || null;
-    if (!featureKey || !isSpecialFeatureMatch(match)) {
+    const featureKey = normalizeSpecialFeatureForMatch(prediction.specialFeature, match);
+    if (!featureKey || getSpecialFeatureScope(match) !== scopeKey) {
       return;
     }
 
@@ -1632,7 +1787,7 @@ function getPlayerSpecialFeatureUsage(playerId, sourceState = state, excludeMatc
   return usage;
 }
 
-function getCurrentSpecialFeatureSelections() {
+function getCurrentSpecialFeatureSelections(scopeKey) {
   const selections = new Map();
 
   document.querySelectorAll('.match-form input[name="specialFeature"]').forEach((input) => {
@@ -1641,9 +1796,18 @@ function getCurrentSpecialFeatureSelections() {
     }
 
     const form = input.closest(".match-form");
-    const featureKey = normalizeSpecialFeature(input.value);
     const matchId = String(form?.dataset.matchId || "");
-    if (!featureKey || !matchId) {
+    if (!matchId) {
+      return;
+    }
+
+    const match = state.matches.find((item) => String(item.id) === matchId);
+    if (!match || getSpecialFeatureScope(match) !== scopeKey) {
+      return;
+    }
+
+    const featureKey = normalizeSpecialFeatureForMatch(input.value, match);
+    if (!featureKey) {
       return;
     }
 
@@ -1658,19 +1822,50 @@ function validateSpecialFeatureSelection(playerId, match, specialFeature, source
     return;
   }
 
-  if (!isSpecialFeatureMatch(match)) {
-    throw new Error("Special features are available only in the final group stage round.");
+  const scopeConfig = getSpecialFeatureScopeConfig(match);
+  if (!scopeConfig) {
+    throw new Error("Special features are not available for this match.");
   }
 
-  const existingUsage = getPlayerSpecialFeatureUsage(playerId, sourceState, match.id);
+  if (!getMatchSpecialFeatureKeys(match).includes(specialFeature)) {
+    throw new Error("This feature is not available for the selected match.");
+  }
+
+  const existingUsage = getPlayerSpecialFeatureUsage(playerId, scopeConfig.key, sourceState, match.id);
   const usedMatchId = existingUsage.get(specialFeature);
   if (usedMatchId && usedMatchId !== String(match.id)) {
-    throw new Error(`${getSpecialFeature(specialFeature)?.label || "This feature"} is already used on another Round 3 match.`);
+    throw new Error(`${getSpecialFeature(specialFeature)?.label || "This feature"} is already used on another ${scopeConfig.usageErrorLabel}.`);
   }
 }
 
 function getPredictionFeatureLabel(featureKey) {
   return getSpecialFeature(featureKey)?.label || "";
+}
+
+function getFeatureTargetLabel(targetValue, match) {
+  const target = normalizeSpecialFeatureTarget(targetValue);
+  if (target === "teamA") {
+    return String(match?.teamA || "Home Team");
+  }
+  if (target === "teamB") {
+    return String(match?.teamB || "Away Team");
+  }
+  return "";
+}
+
+function getPredictionFeatureDisplayText(prediction, match) {
+  const featureKey = normalizeSpecialFeatureForMatch(prediction?.specialFeature, match);
+  const feature = getSpecialFeature(featureKey);
+  if (!feature) {
+    return "";
+  }
+
+  if (featureKey === "cleanSheetMaster") {
+    const targetLabel = getFeatureTargetLabel(prediction?.specialFeatureTarget, match);
+    return targetLabel ? `${feature.label}: ${targetLabel}` : feature.label;
+  }
+
+  return feature.label;
 }
 
 function renderAll() {
@@ -1768,7 +1963,7 @@ function renderNotifications() {
   if (!entries.length) {
     dom.notificationList.innerHTML = `
       <div class="notification-empty">
-        Your notifications will appear here when you have a same-day match reminder, an active Round 3 special pick, a special feature result, or a leaderboard rank change.
+        Your notifications will appear here when you have a same-day match reminder, an active special pick, a special feature result, or a leaderboard rank change.
       </div>
     `;
     return;
@@ -2092,9 +2287,7 @@ function renderMatchCard(match, player) {
       ? "Update Prediction"
       : "Submit Prediction";
 
-  const actualScore = match.actualScoreA !== null && match.actualScoreB !== null
-    ? `${match.actualScoreA} - ${match.actualScoreB}`
-    : "Pending";
+  const actualScore = formatMatchScoreline(match);
 
   return `
     <article class="match-card">
@@ -2132,7 +2325,9 @@ function renderMatchCard(match, player) {
         data-match-id="${escapeHtml(match.id)}"
         data-initial-score-a="${escapeHtml(prediction ? prediction.predictedScoreA : "")}"
         data-initial-score-b="${escapeHtml(prediction ? prediction.predictedScoreB : "")}"
+        data-initial-penalty-winner="${escapeHtml(prediction?.predictedPenaltyWinner || "")}"
         data-initial-special-feature="${escapeHtml(prediction?.specialFeature || "")}"
+        data-initial-special-feature-target="${escapeHtml(prediction?.specialFeatureTarget || "")}"
       >
         <div class="score-inputs">
           <label class="score-box">
@@ -2145,6 +2340,7 @@ function renderMatchCard(match, player) {
             <input type="number" min="0" step="1" name="predictedScoreB" value="${prediction ? prediction.predictedScoreB : ""}" ${isLocked ? "disabled" : ""}>
           </label>
         </div>
+        ${isKnockoutMatch(match) ? renderShootoutPicker(match, prediction, isLocked) : ""}
         ${hasSpecialFeature ? renderSpecialFeaturePicker(match, prediction, isOpen) : ""}
         <div class="inline-actions">
           <button class="primary-button" type="submit" data-role="match-submit" ${isLocked ? "disabled" : ""}>${buttonLabel}</button>
@@ -2171,23 +2367,29 @@ function renderMatchCard(match, player) {
 }
 
 function renderSpecialFeaturePicker(match, prediction, isOpen) {
-  const selectedFeature = normalizeSpecialFeature(prediction?.specialFeature);
+  const scopeConfig = getSpecialFeatureScopeConfig(match);
+  const selectedFeature = normalizeSpecialFeatureForMatch(prediction?.specialFeature, match);
+  const selectedFeatureTarget = normalizeSpecialFeatureTarget(prediction?.specialFeatureTarget);
+
+  if (!scopeConfig) {
+    return "";
+  }
 
   return `
     <div class="special-feature-panel">
       <div class="special-feature-header">
         <div>
-          <strong>Round 3 Special Pick</strong>
-          <p class="deadline-note">Use each feature once across the final group-stage round. Pick another one to switch instantly, or click the active one again to remove it.</p>
+          <strong>${escapeHtml(scopeConfig.title)}</strong>
+          <p class="deadline-note">${escapeHtml(scopeConfig.note)}</p>
         </div>
         <div class="chip-row">
-          <span class="chip special-feature-scope">Round 3 only</span>
+          <span class="chip special-feature-scope">${escapeHtml(scopeConfig.scopeChip)}</span>
           ${!isOpen ? `<span class="chip special-feature-lock-chip">${renderLockIcon()} Locked</span>` : ""}
         </div>
       </div>
       <input type="hidden" name="specialFeature" value="${escapeHtml(selectedFeature)}">
       <div class="special-feature-list" role="group" aria-label="Special prediction features">
-        ${SPECIAL_FEATURE_KEYS.map((featureKey) => {
+        ${scopeConfig.featureKeys.map((featureKey) => {
           const feature = SPECIAL_FEATURES[featureKey];
           return `
             <button
@@ -2209,7 +2411,49 @@ function renderSpecialFeaturePicker(match, prediction, isOpen) {
           `;
         }).join("")}
       </div>
+      ${renderSpecialFeatureTargetPicker(match, selectedFeature, selectedFeatureTarget, isOpen)}
       <p class="special-feature-summary" data-role="special-feature-summary"></p>
+    </div>
+  `;
+}
+
+function renderSpecialFeatureTargetPicker(match, selectedFeature, selectedFeatureTarget, isOpen) {
+  if (!getMatchSpecialFeatureKeys(match).includes("cleanSheetMaster")) {
+    return "";
+  }
+
+  const shouldShow = selectedFeature === "cleanSheetMaster";
+
+  return `
+    <div class="shootout-picker special-feature-target-picker ${shouldShow ? "" : "hidden"} ${shouldShow && !selectedFeatureTarget ? "is-required" : ""}" data-role="special-feature-target-picker">
+      <label class="select-box">
+        <span>Clean sheet team</span>
+        <select name="specialFeatureTarget" data-role="special-feature-target-select" ${!shouldShow || !isOpen ? "disabled" : ""}>
+          <option value="">Select team</option>
+          <option value="teamA" ${selectedFeatureTarget === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
+          <option value="teamB" ${selectedFeatureTarget === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
+        </select>
+      </label>
+      <p class="deadline-note">Required for Clean Sheet Master. Pick the team you expect to concede zero goals.</p>
+    </div>
+  `;
+}
+
+function renderShootoutPicker(match, prediction, isLocked) {
+  const selectedWinner = normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner);
+  const shouldShow = requiresKnockoutWinner(match, prediction?.predictedScoreA ?? null, prediction?.predictedScoreB ?? null);
+
+  return `
+    <div class="shootout-picker ${shouldShow ? "" : "hidden"}" data-role="shootout-picker">
+      <label class="select-box">
+        <span>Penalty shootout winner</span>
+        <select name="predictedPenaltyWinner" data-role="shootout-winner-select" ${isLocked || !shouldShow ? "disabled" : ""}>
+          <option value="">Select winner</option>
+          <option value="teamA" ${selectedWinner === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
+          <option value="teamB" ${selectedWinner === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
+        </select>
+      </label>
+      <p class="deadline-note">Knockout matches cannot end in a draw. If you predict a level score, choose who advances on penalties.</p>
     </div>
   `;
 }
@@ -2217,6 +2461,18 @@ function renderSpecialFeaturePicker(match, prediction, isOpen) {
 function renderSpecialFeatureIcon(featureKey) {
   if (featureKey === "doublePick") {
     return `<span class="special-feature-text-icon">X2</span>`;
+  }
+
+  if (featureKey === "riskMode") {
+    return `<span class="special-feature-emoji-icon">💣</span>`;
+  }
+
+  if (featureKey === "extraTimeHunter") {
+    return `<span class="special-feature-emoji-icon">⏱️</span>`;
+  }
+
+  if (featureKey === "cleanSheetMaster") {
+    return `<span class="special-feature-emoji-icon">🧤</span>`;
   }
 
   if (featureKey === "goalRush") {
@@ -2239,17 +2495,18 @@ function renderSpecialFeatureIcon(featureKey) {
 
 function getMatchPredictionMetaText(prediction, match) {
   const featureLabel = isSpecialFeatureMatch(match)
-    ? getPredictionFeatureLabel(prediction.specialFeature)
+    ? getPredictionFeatureDisplayText(prediction, match)
     : "";
+  const predictionSummary = formatPredictionScoreline(prediction, match);
 
   if (!match.isFinished) {
     return featureLabel
-      ? `Prediction saved. ${featureLabel} is selected for this match until the deadline.`
-      : "Prediction saved. You can update it until the deadline.";
+      ? `Prediction saved: ${predictionSummary}. ${featureLabel} is selected for this match until the deadline.`
+      : `Prediction saved: ${predictionSummary}. You can update it until the deadline.`;
   }
 
   const parts = [`Prediction submitted - earned ${prediction.points || 0} pts`];
-  const pointsBreakdown = getMatchPointsBreakdownText(prediction);
+  const pointsBreakdown = getMatchPointsBreakdownText(prediction, match);
   if (pointsBreakdown) {
     parts.push(pointsBreakdown);
   }
@@ -2362,26 +2619,59 @@ function renderGroupCard(group, player) {
 
 function syncMatchFormStates() {
   const player = getActivePlayer();
-  const savedUsage = player ? getPlayerSpecialFeatureUsage(player.id) : new Map();
-  const currentUsage = getCurrentSpecialFeatureSelections();
-  const visibleMatchIds = new Set(
-    Array.from(document.querySelectorAll(".match-form"))
-      .map((item) => String(item?.dataset?.matchId || ""))
-      .filter(Boolean)
-  );
+  const forms = Array.from(document.querySelectorAll(".match-form"))
+    .filter((form) => form instanceof HTMLFormElement);
+  const visibleMatchIdsByScope = new Map();
 
-  savedUsage.forEach((usedMatchId, featureKey) => {
-    if (!visibleMatchIds.has(usedMatchId) && !currentUsage.has(featureKey)) {
-      currentUsage.set(featureKey, usedMatchId);
+  forms.forEach((form) => {
+    const matchId = String(form.dataset.matchId || "");
+    const match = state.matches.find((item) => String(item.id) === matchId);
+    const scopeKey = getSpecialFeatureScope(match);
+    if (!scopeKey) {
+      return;
     }
+
+    if (!visibleMatchIdsByScope.has(scopeKey)) {
+      visibleMatchIdsByScope.set(scopeKey, new Set());
+    }
+
+    visibleMatchIdsByScope.get(scopeKey).add(matchId);
   });
 
-  document.querySelectorAll(".match-form").forEach((form) => {
+  const currentUsageByScope = new Map(
+    Object.keys(SPECIAL_FEATURE_SCOPE_CONFIGS).map((scopeKey) => [
+      scopeKey,
+      getCurrentSpecialFeatureSelections(scopeKey)
+    ])
+  );
+  const savedUsageByScope = new Map(
+    Object.keys(SPECIAL_FEATURE_SCOPE_CONFIGS).map((scopeKey) => [
+      scopeKey,
+      player ? getPlayerSpecialFeatureUsage(player.id, scopeKey) : new Map()
+    ])
+  );
+
+  savedUsageByScope.forEach((savedUsage, scopeKey) => {
+    const currentUsage = currentUsageByScope.get(scopeKey) || new Map();
+    const visibleMatchIds = visibleMatchIdsByScope.get(scopeKey) || new Set();
+
+    savedUsage.forEach((usedMatchId, featureKey) => {
+      if (!visibleMatchIds.has(usedMatchId) && !currentUsage.has(featureKey)) {
+        currentUsage.set(featureKey, usedMatchId);
+      }
+    });
+
+    currentUsageByScope.set(scopeKey, currentUsage);
+  });
+
+  forms.forEach((form) => {
+    const matchId = String(form.dataset.matchId || "");
+    const match = state.matches.find((item) => String(item.id) === matchId);
+    const scopeKey = getSpecialFeatureScope(match);
+
     syncMatchFormState(form, {
       player,
-      savedUsage,
-      currentUsage,
-      visibleMatchIds
+      currentUsage: currentUsageByScope.get(scopeKey) || new Map()
     });
   });
 }
@@ -2406,21 +2696,59 @@ function syncMatchFormState(form, sharedContext = null) {
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const initialScoreA = String(form.dataset.initialScoreA || "");
   const initialScoreB = String(form.dataset.initialScoreB || "");
-  const initialSpecialFeature = normalizeSpecialFeature(form.dataset.initialSpecialFeature);
+  const initialPenaltyWinner = normalizeKnockoutWinnerChoice(form.dataset.initialPenaltyWinner);
+  const initialSpecialFeature = normalizeSpecialFeatureForMatch(form.dataset.initialSpecialFeature, match);
+  const initialSpecialFeatureTarget = normalizeSpecialFeatureTarget(form.dataset.initialSpecialFeatureTarget);
   const currentScoreA = String(form.elements.predictedScoreA?.value || "").trim();
   const currentScoreB = String(form.elements.predictedScoreB?.value || "").trim();
+  const parsedCurrentScoreA = parseScoreInput(currentScoreA);
+  const parsedCurrentScoreB = parseScoreInput(currentScoreB);
+  const needsShootoutWinner = requiresKnockoutWinner(match, parsedCurrentScoreA, parsedCurrentScoreB);
+  const shootoutPicker = form.querySelector('[data-role="shootout-picker"]');
+  const shootoutWinnerSelect = form.querySelector('[data-role="shootout-winner-select"]');
+  const currentPenaltyWinner = normalizeKnockoutWinnerChoice(shootoutWinnerSelect?.value);
   const specialFeatureInput = form.querySelector('input[name="specialFeature"]');
-  const currentSpecialFeature = normalizeSpecialFeature(specialFeatureInput?.value);
+  const currentSpecialFeature = normalizeSpecialFeatureForMatch(specialFeatureInput?.value, match);
+  const specialFeatureTargetPicker = form.querySelector('[data-role="special-feature-target-picker"]');
+  const specialFeatureTargetSelect = form.querySelector('[data-role="special-feature-target-select"]');
+  const currentSpecialFeatureTarget = normalizeSpecialFeatureTarget(specialFeatureTargetSelect?.value);
+  const needsSpecialFeatureTarget = currentSpecialFeature === "cleanSheetMaster";
   const hasSavedPrediction = initialScoreA !== "" && initialScoreB !== "";
   const isDirty = hasSavedPrediction && (
     currentScoreA !== initialScoreA
     || currentScoreB !== initialScoreB
+    || currentPenaltyWinner !== initialPenaltyWinner
     || currentSpecialFeature !== initialSpecialFeature
+    || currentSpecialFeatureTarget !== initialSpecialFeatureTarget
   );
 
-  submitButton.disabled = !isOpen;
+  if (shootoutPicker instanceof HTMLElement) {
+    shootoutPicker.classList.toggle("hidden", !needsShootoutWinner);
+    shootoutPicker.classList.toggle("is-required", needsShootoutWinner && !currentPenaltyWinner);
+  }
+
+  if (shootoutWinnerSelect instanceof HTMLSelectElement) {
+    shootoutWinnerSelect.disabled = !isOpen || !needsShootoutWinner;
+  }
+
+  if (specialFeatureTargetPicker instanceof HTMLElement) {
+    specialFeatureTargetPicker.classList.toggle("hidden", !needsSpecialFeatureTarget);
+    specialFeatureTargetPicker.classList.toggle("is-required", needsSpecialFeatureTarget && !currentSpecialFeatureTarget);
+  }
+
+  if (specialFeatureTargetSelect instanceof HTMLSelectElement) {
+    specialFeatureTargetSelect.disabled = !isOpen || !needsSpecialFeatureTarget;
+  }
+
+  submitButton.disabled = !isOpen
+    || (needsShootoutWinner && !currentPenaltyWinner)
+    || (needsSpecialFeatureTarget && !currentSpecialFeatureTarget);
   if (!isOpen) {
     submitButton.textContent = "Prediction Closed";
+  } else if (needsShootoutWinner && !currentPenaltyWinner) {
+    submitButton.textContent = "Choose Shootout Winner";
+  } else if (needsSpecialFeatureTarget && !currentSpecialFeatureTarget) {
+    submitButton.textContent = "Choose Clean Sheet Team";
   } else {
     submitButton.textContent = hasSavedPrediction && !isDirty
       ? "Update Prediction"
@@ -2431,7 +2759,7 @@ function syncMatchFormState(form, sharedContext = null) {
     return;
   }
 
-  const currentUsage = sharedContext?.currentUsage ?? getCurrentSpecialFeatureSelections();
+  const currentUsage = sharedContext?.currentUsage ?? getCurrentSpecialFeatureSelections(getSpecialFeatureScope(match));
 
   const featureButtons = Array.from(form.querySelectorAll('[data-role="special-feature-button"]'));
   featureButtons.forEach((button) => {
@@ -2439,7 +2767,7 @@ function syncMatchFormState(form, sharedContext = null) {
       return;
     }
 
-    const featureKey = normalizeSpecialFeature(button.dataset.feature);
+    const featureKey = normalizeSpecialFeatureForMatch(button.dataset.feature, match);
     const isActive = featureKey === currentSpecialFeature;
     const usedMatchId = currentUsage.get(featureKey);
     const featureUsedElsewhere = Boolean(usedMatchId && usedMatchId !== matchId);
@@ -2453,26 +2781,82 @@ function syncMatchFormState(form, sharedContext = null) {
 
   const summary = form.querySelector('[data-role="special-feature-summary"]');
   if (summary) {
-    summary.textContent = getSpecialFeatureSummaryText(currentSpecialFeature, currentUsage, matchId, isOpen, Boolean(player));
+    summary.textContent = getSpecialFeatureSummaryText(
+      match,
+      currentSpecialFeature,
+      currentSpecialFeatureTarget,
+      currentUsage,
+      matchId,
+      isOpen,
+      Boolean(player)
+    );
   }
 }
 
-function getSpecialFeatureSummaryText(currentSpecialFeature, usageMap, matchId, isOpen, hasPlayer) {
+function syncAdminMatchFormStates() {
+  document.querySelectorAll(".admin-match-form").forEach((form) => {
+    syncAdminMatchFormState(form);
+  });
+}
+
+function syncAdminMatchFormState(form) {
+  if (!(form instanceof HTMLFormElement)) {
+    return;
+  }
+
+  const matchId = String(form.dataset.matchId || "");
+  const match = state.matches.find((item) => String(item.id) === matchId);
+  if (!match || !isKnockoutMatch(match)) {
+    return;
+  }
+
+  const scoreA = parseScoreInput(form.elements.actualScoreA?.value);
+  const scoreB = parseScoreInput(form.elements.actualScoreB?.value);
+  const needsShootoutWinner = requiresKnockoutWinner(match, scoreA, scoreB);
+  const shootoutPicker = form.querySelector('[data-role="admin-shootout-picker"]');
+  const shootoutWinnerSelect = form.querySelector('[data-role="admin-shootout-winner-select"]');
+
+  if (shootoutPicker instanceof HTMLElement) {
+    shootoutPicker.classList.toggle("hidden", !needsShootoutWinner);
+    shootoutPicker.classList.toggle("is-required", needsShootoutWinner && !normalizeKnockoutWinnerChoice(shootoutWinnerSelect?.value));
+  }
+
+  if (shootoutWinnerSelect instanceof HTMLSelectElement) {
+    shootoutWinnerSelect.disabled = !needsShootoutWinner;
+  }
+}
+
+function getSpecialFeatureSummaryText(match, currentSpecialFeature, currentSpecialFeatureTarget, usageMap, matchId, isOpen, hasPlayer) {
+  const scopeConfig = getSpecialFeatureScopeConfig(match);
+  if (!scopeConfig) {
+    return "";
+  }
+
   if (!hasPlayer) {
-    return "Log in to choose a special pick for this Round 3 match.";
+    return scopeConfig.loginSummary;
   }
 
   if (!isOpen) {
     return currentSpecialFeature
-      ? `${getPredictionFeatureLabel(currentSpecialFeature)} is locked for this match.`
-      : "Special picks are locked because the deadline has passed.";
+      ? `${getPredictionFeatureDisplayText({
+        specialFeature: currentSpecialFeature,
+        specialFeatureTarget: currentSpecialFeatureTarget
+      }, match)} is locked for this match.`
+      : scopeConfig.lockedEmptySummary;
   }
 
   if (currentSpecialFeature) {
-    return `${getPredictionFeatureLabel(currentSpecialFeature)} is active for this match.`;
+    if (currentSpecialFeature === "cleanSheetMaster" && !currentSpecialFeatureTarget) {
+      return "Choose which team will keep the clean sheet.";
+    }
+
+    return `${getPredictionFeatureDisplayText({
+      specialFeature: currentSpecialFeature,
+      specialFeatureTarget: currentSpecialFeatureTarget
+    }, match)} is active for this match.`;
   }
 
-  const usedFeatures = SPECIAL_FEATURE_KEYS
+  const usedFeatures = scopeConfig.featureKeys
     .filter((featureKey) => {
       const usedMatchId = usageMap.get(featureKey);
       return Boolean(usedMatchId && usedMatchId !== matchId);
@@ -2480,10 +2864,10 @@ function getSpecialFeatureSummaryText(currentSpecialFeature, usageMap, matchId, 
     .map((featureKey) => getPredictionFeatureLabel(featureKey));
 
   if (usedFeatures.length) {
-    return `${usedFeatures.join(", ")} already used on other Round 3 matches.`;
+    return `${usedFeatures.join(", ")} ${scopeConfig.usedSummarySuffix}`;
   }
 
-  return "Pick one optional feature for this match.";
+  return scopeConfig.emptySummary;
 }
 
 function renderLockIcon() {
@@ -2494,7 +2878,7 @@ function renderLockIcon() {
   `;
 }
 
-function getMatchPointsBreakdownText(prediction) {
+function getMatchPointsBreakdownText(prediction, match = null) {
   const basePoints = Number(prediction.basePoints || 0);
   const specialBonusPoints = Number(prediction.specialBonusPoints || 0);
   const feature = getSpecialFeature(prediction.specialFeature);
@@ -2503,7 +2887,8 @@ function getMatchPointsBreakdownText(prediction) {
     return `Base ${basePoints}`;
   }
 
-  return `Base ${basePoints} + ${feature.label} ${specialBonusPoints}`;
+  const featureLabel = match ? (getPredictionFeatureDisplayText(prediction, match) || feature.label) : feature.label;
+  return `Base ${basePoints} + ${featureLabel} ${specialBonusPoints}`;
 }
 
 function renderLeaderboard() {
@@ -2586,17 +2971,17 @@ function renderHistory() {
       playerName: prediction.playerName,
       submittedAt: prediction.submittedAt,
       title: `${prediction.playerName} • ${match.teamA} vs ${match.teamB}`,
-      predictionText: `${prediction.predictedScoreA} - ${prediction.predictedScoreB}`,
+      predictionText: formatPredictionScoreline(prediction, match),
       featureText: isSpecialFeatureMatch(match)
         ? (
-          getPredictionFeatureLabel(prediction.specialFeature)
-            ? `Feature: ${getPredictionFeatureLabel(prediction.specialFeature)}`
+          getPredictionFeatureDisplayText(prediction, match)
+            ? `Feature: ${getPredictionFeatureDisplayText(prediction, match)}`
             : "Feature: None"
         )
         : "",
-      actualText: match.actualScoreA !== null && match.actualScoreB !== null ? `${match.actualScoreA} - ${match.actualScoreB}` : "Pending",
+      actualText: formatMatchScoreline(match),
       points: prediction.points || 0,
-      pointsDetail: match.isFinished ? getMatchPointsBreakdownText(prediction) : "",
+      pointsDetail: match.isFinished ? getMatchPointsBreakdownText(prediction, match) : "",
       isPublic: Boolean(match.isFinished && match.actualScoreA !== null && match.actualScoreB !== null),
       status: getMatchHistoryStatus(prediction, match)
     };
@@ -2971,7 +3356,7 @@ function getActiveSpecialFeatureNotificationEntries(playerId, sourceState = stat
         return null;
       }
 
-      const featureKey = normalizeSpecialFeature(prediction.specialFeature);
+      const featureKey = normalizeSpecialFeatureForMatch(prediction.specialFeature, match);
       if (!featureKey) {
         return null;
       }
@@ -2992,12 +3377,13 @@ function buildActiveSpecialFeatureNotificationEntry(prediction, match, featureKe
       "special-feature-active",
       String(prediction.playerId),
       String(match.id),
-      featureKey
+      featureKey,
+      normalizeSpecialFeatureTarget(prediction.specialFeatureTarget)
     ].join(":"),
     resolvedAt: prediction.submittedAt || match.predictionDeadline || match.matchDate || new Date().toISOString(),
     title: `${feature.label} activated`,
     context: `${match.teamA} vs ${match.teamB}`,
-    summary: `Your ${feature.label} is active for this match.`,
+    summary: `Your ${getPredictionFeatureDisplayText(prediction, match) || feature.label} is active for this match.`,
     actual: `Round: ${match.round} • Deadline: ${formatDateTime(match.predictionDeadline)}`,
     status: {
       label: "Feature Active",
@@ -3019,7 +3405,7 @@ function getSpecialFeatureNotificationEntries(playerId, sourceState = state) {
         return null;
       }
 
-      const featureKey = normalizeSpecialFeature(prediction.specialFeature);
+      const featureKey = normalizeSpecialFeatureForMatch(prediction.specialFeature, match);
       if (!featureKey || !match.isFinished || match.actualScoreA === null || match.actualScoreB === null) {
         return null;
       }
@@ -3036,7 +3422,7 @@ function buildSpecialFeatureNotificationEntry(prediction, match, featureKey) {
   }
 
   const resolvedAt = getMatchResultResolvedAt(match);
-  const resultText = `${match.actualScoreA} - ${match.actualScoreB}`;
+  const resultText = formatMatchScoreline(match);
 
   return {
     id: [
@@ -3044,6 +3430,7 @@ function buildSpecialFeatureNotificationEntry(prediction, match, featureKey) {
       String(prediction.playerId),
       String(match.id),
       featureKey,
+      normalizeSpecialFeatureTarget(prediction.specialFeatureTarget),
       String(match.actualScoreA),
       String(match.actualScoreB),
       String(resolvedAt)
@@ -3052,7 +3439,7 @@ function buildSpecialFeatureNotificationEntry(prediction, match, featureKey) {
     title: `${feature.label}: ${match.teamA} vs ${match.teamB}`,
     context: `${match.round} • ${getMatchGroupLabel(match)}`,
     summary: getSpecialFeatureNotificationSummary(featureKey, prediction, match),
-    actual: `Actual: ${resultText} • ${getMatchPointsBreakdownText(prediction)} • Total ${prediction.points || 0} pts`,
+    actual: `Actual: ${resultText} • ${getMatchPointsBreakdownText(prediction, match)} • Total ${prediction.points || 0} pts`,
     status: getSpecialFeatureNotificationStatus(featureKey, prediction),
     timeLabel: "Result",
     sortPriority: 4
@@ -3079,6 +3466,24 @@ function getSpecialFeatureNotificationSummary(featureKey, prediction, match) {
     return isExactScore(prediction, match)
       ? "Perfect Boost activated! Exact score achieved, you earned 8 points instead of 6."
       : "Perfect Boost was active, but the exact score was not correct, so normal scoring was applied.";
+  }
+
+  if (featureKey === "riskMode") {
+    return basePoints > 0
+      ? "🎰 All In successful! You earned +15 points."
+      : "🎰 All In failed! 15 points have been deducted.";
+  }
+
+  if (featureKey === "extraTimeHunter") {
+    return didMatchGoToExtraTime(match)
+      ? "⏱️ Extra Time Hunter successful! +3 bonus points."
+      : "⏱️ The match finished in regular time. No bonus awarded.";
+  }
+
+  if (featureKey === "cleanSheetMaster") {
+    return didTeamKeepCleanSheet(match, prediction.specialFeatureTarget)
+      ? "🧤 Clean Sheet Master successful! +5 bonus points."
+      : "🧤 The selected team did not keep a clean sheet. No bonus awarded.";
   }
 
   return "Your special feature was applied to this match result.";
@@ -3397,11 +3802,32 @@ function renderAdmin() {
                       <input type="number" min="0" step="1" name="actualScoreB" value="${match.actualScoreB ?? ""}">
                     </label>
                   </div>
+                  ${isKnockoutMatch(match) ? `
+                    <div class="shootout-picker admin-shootout-picker ${requiresKnockoutWinner(match, match.actualScoreA, match.actualScoreB) ? "" : "hidden"}" data-role="admin-shootout-picker">
+                      <label class="select-box">
+                        <span>Penalty shootout winner</span>
+                        <select name="actualPenaltyWinner" data-role="admin-shootout-winner-select" ${requiresKnockoutWinner(match, match.actualScoreA, match.actualScoreB) ? "" : "disabled"}>
+                          <option value="">Select winner</option>
+                          <option value="teamA" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
+                          <option value="teamB" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
+                        </select>
+                      </label>
+                      <p class="deadline-note">Required only when the knockout match finishes level and goes to penalties.</p>
+                    </div>
+                  ` : ""}
                   <div class="admin-form-footer">
-                    <label class="chip admin-toggle-chip">
-                      <input type="checkbox" name="isFinished" ${match.isFinished ? "checked" : ""}>
-                      Mark match as finished
-                    </label>
+                    <div class="chip-row">
+                      ${isKnockoutMatch(match) ? `
+                        <label class="chip admin-toggle-chip">
+                          <input type="checkbox" name="wentToExtraTime" ${didMatchGoToExtraTime(match) ? "checked" : ""}>
+                          Match went to extra time
+                        </label>
+                      ` : ""}
+                      <label class="chip admin-toggle-chip">
+                        <input type="checkbox" name="isFinished" ${match.isFinished ? "checked" : ""}>
+                        Mark match as finished
+                      </label>
+                    </div>
                     <button class="primary-button" type="submit">Save Match</button>
                   </div>
                 </form>
@@ -3477,6 +3903,7 @@ function renderAdmin() {
       </section>
     ` : ""}
   `;
+  syncAdminMatchFormStates();
 }
 
 function getAdminRoundFilterValue(availableAdminRounds) {
@@ -3568,10 +3995,12 @@ function getMatchPredictionScoreBreakdown(prediction, match) {
     return buildEmptyMatchScoreBreakdown();
   }
 
+  const scoring = getMatchScoring(match);
   const basePoints = calculateMatchPredictionBasePoints(prediction, match);
   const specialFeature = isSpecialFeatureMatch(match)
-    ? normalizeSpecialFeature(prediction.specialFeature)
+    ? normalizeSpecialFeatureForMatch(prediction.specialFeature, match)
     : "";
+  const specialFeatureTarget = normalizeSpecialFeatureTarget(prediction.specialFeatureTarget);
   const totalGoals = Number(match.actualScoreA) + Number(match.actualScoreB);
   let specialBonusPoints = 0;
   let totalPoints = basePoints;
@@ -3583,8 +4012,20 @@ function getMatchPredictionScoreBreakdown(prediction, match) {
     specialBonusPoints = totalGoals;
     totalPoints = basePoints + specialBonusPoints;
   } else if (specialFeature === "perfectBoost" && isExactScore(prediction, match)) {
-    specialBonusPoints = 8 - MATCH_SCORING.exactScore;
+    specialBonusPoints = 8 - scoring.exactScore;
     totalPoints = 8;
+  } else if (specialFeature === "riskMode") {
+    specialBonusPoints = basePoints > 0 ? 15 - basePoints : -15;
+    totalPoints = 15;
+    if (basePoints === 0) {
+      totalPoints = -15;
+    }
+  } else if (specialFeature === "extraTimeHunter" && didMatchGoToExtraTime(match)) {
+    specialBonusPoints = 3;
+    totalPoints = basePoints + specialBonusPoints;
+  } else if (specialFeature === "cleanSheetMaster" && didTeamKeepCleanSheet(match, specialFeatureTarget)) {
+    specialBonusPoints = 5;
+    totalPoints = basePoints + specialBonusPoints;
   }
 
   return {
@@ -3595,18 +4036,44 @@ function getMatchPredictionScoreBreakdown(prediction, match) {
 }
 
 function calculateMatchPredictionBasePoints(prediction, match) {
+  const scoring = getMatchScoring(match);
   if (isExactScore(prediction, match)) {
-    return MATCH_SCORING.exactScore;
+    return scoring.exactScore;
   }
 
-  const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB);
-  const predictedOutcome = getOutcome(prediction.predictedScoreA, prediction.predictedScoreB);
+  const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB, match.actualPenaltyWinner);
+  const predictedOutcome = getOutcome(
+    prediction.predictedScoreA,
+    prediction.predictedScoreB,
+    prediction.predictedPenaltyWinner
+  );
 
   if (predictedOutcome === actualOutcome) {
-    return MATCH_SCORING.correctResult;
+    return scoring.correctResult;
   }
 
   return 0;
+}
+
+function getMatchScoring(match) {
+  return isKnockoutMatch(match) ? KNOCKOUT_MATCH_SCORING : MATCH_SCORING;
+}
+
+function didTeamKeepCleanSheet(match, targetTeam) {
+  const target = normalizeSpecialFeatureTarget(targetTeam);
+  if (!match || match.actualScoreA === null || match.actualScoreB === null) {
+    return false;
+  }
+
+  if (target === "teamA") {
+    return Number(match.actualScoreB) === 0;
+  }
+
+  if (target === "teamB") {
+    return Number(match.actualScoreA) === 0;
+  }
+
+  return false;
 }
 
 function calculateGroupPredictionPoints(prediction, group) {
@@ -3893,7 +4360,7 @@ function getMatchHistoryStatus(prediction, match) {
     return { label: "Correct Score", className: "status-exact" };
   }
 
-  if (Number(prediction.basePoints || 0) === MATCH_SCORING.correctResult) {
+  if (Number(prediction.basePoints || 0) === getMatchScoring(match).correctResult) {
     return { label: "Correct Result", className: "status-winner" };
   }
 
@@ -3917,13 +4384,23 @@ function getGroupHistoryStatus(prediction, group) {
 }
 
 function isExactScore(prediction, match) {
-  return Boolean(
+  const scoresMatch = Boolean(
     match.isFinished &&
     match.actualScoreA !== null &&
     match.actualScoreB !== null &&
     prediction.predictedScoreA === match.actualScoreA &&
     prediction.predictedScoreB === match.actualScoreB
   );
+
+  if (!scoresMatch) {
+    return false;
+  }
+
+  if (!requiresKnockoutWinner(match, match.actualScoreA, match.actualScoreB)) {
+    return true;
+  }
+
+  return normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner) === normalizeKnockoutWinnerChoice(match.actualPenaltyWinner);
 }
 
 function exportLeaderboard() {
@@ -4230,6 +4707,10 @@ function normalizeMatch(match, index, groupLookup) {
   const teamBInfo = groupLookup[normalizeName(match.teamB)] || null;
   const actualScoreA = parseNullableScore(match.actualScoreA);
   const actualScoreB = parseNullableScore(match.actualScoreB);
+  const actualPenaltyWinner = requiresKnockoutWinner(match, actualScoreA, actualScoreB)
+    ? normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) || null
+    : null;
+  const wentToExtraTime = Boolean(match.wentToExtraTime) || Boolean(actualPenaltyWinner);
   const matchDate = String(match.matchDate);
   const predictionDeadline = match.predictionDeadline
     ? String(match.predictionDeadline)
@@ -4247,6 +4728,8 @@ function normalizeMatch(match, index, groupLookup) {
     predictionDeadline,
     actualScoreA,
     actualScoreB,
+    actualPenaltyWinner,
+    wentToExtraTime,
     isFinished: Boolean(match.isFinished),
     resultUpdatedAt: match.resultUpdatedAt ? String(match.resultUpdatedAt) : null
   };
@@ -4316,11 +4799,101 @@ function parseNullableScore(value) {
   return parsed;
 }
 
-function getOutcome(scoreA, scoreB) {
+function getOutcome(scoreA, scoreB, penaltyWinner = "") {
   if (scoreA === scoreB) {
+    const resolvedWinner = normalizeKnockoutWinnerChoice(penaltyWinner);
+    if (resolvedWinner === "teamA") {
+      return "home";
+    }
+    if (resolvedWinner === "teamB") {
+      return "away";
+    }
     return "draw";
   }
   return scoreA > scoreB ? "home" : "away";
+}
+
+function normalizeTeamSideChoice(value) {
+  const normalizedValue = String(value || "").trim();
+  return normalizedValue === "teamA" || normalizedValue === "teamB" ? normalizedValue : "";
+}
+
+function normalizeKnockoutWinnerChoice(value) {
+  return normalizeTeamSideChoice(value);
+}
+
+function normalizeSpecialFeatureTarget(value) {
+  return normalizeTeamSideChoice(value);
+}
+
+function isKnockoutMatch(match) {
+  return Boolean(match) && isKnockoutRound(match.round);
+}
+
+function isKnockoutRound(roundName) {
+  return !isGroupStageRound(roundName);
+}
+
+function requiresKnockoutWinner(match, scoreA, scoreB) {
+  return isKnockoutMatch(match) && scoreA !== null && scoreB !== null && scoreA === scoreB;
+}
+
+function getKnockoutWinnerLabel(winnerChoice, match) {
+  const normalizedWinner = normalizeKnockoutWinnerChoice(winnerChoice);
+  if (normalizedWinner === "teamA") {
+    return String(match?.teamA || "Team A");
+  }
+  if (normalizedWinner === "teamB") {
+    return String(match?.teamB || "Team B");
+  }
+  return "";
+}
+
+function didMatchGoToExtraTime(match) {
+  return Boolean(
+    match
+    && isKnockoutMatch(match)
+    && (
+      Boolean(match.wentToExtraTime)
+      || Boolean(normalizeKnockoutWinnerChoice(match.actualPenaltyWinner))
+    )
+  );
+}
+
+function formatScorelineWithWinner(scoreA, scoreB, winnerChoice, match) {
+  if (scoreA === null || scoreB === null) {
+    return "Pending";
+  }
+
+  const scoreline = `${scoreA} - ${scoreB}`;
+  if (!requiresKnockoutWinner(match, Number(scoreA), Number(scoreB))) {
+    return scoreline;
+  }
+
+  const winnerLabel = getKnockoutWinnerLabel(winnerChoice, match);
+  return winnerLabel ? `${scoreline} • Pens: ${winnerLabel}` : scoreline;
+}
+
+function formatMatchScoreline(match) {
+  const scoreline = formatScorelineWithWinner(match.actualScoreA, match.actualScoreB, match.actualPenaltyWinner, match);
+  if (scoreline === "Pending" || !didMatchGoToExtraTime(match)) {
+    return scoreline;
+  }
+
+  if (scoreline.includes("• Pens:")) {
+    return scoreline.replace("• Pens:", "• AET • Pens:");
+  }
+
+  return `${scoreline} • AET`;
+}
+
+function formatPredictionScoreline(prediction, match) {
+  return formatScorelineWithWinner(
+    prediction?.predictedScoreA ?? null,
+    prediction?.predictedScoreB ?? null,
+    prediction?.predictedPenaltyWinner,
+    match
+  );
 }
 
 function formatDateTime(value) {

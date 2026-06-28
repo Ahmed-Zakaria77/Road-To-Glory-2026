@@ -137,6 +137,52 @@ body[data-round-theme="round-3"] {
   --theme-sweep: rgba(254, 236, 65, 0.18);
 }
 
+body[data-round-theme="knockout-finals"] {
+  --bg: #000000;
+  --bg-alt: #233d4d;
+  --panel: rgba(8, 14, 18, 0.84);
+  --panel-strong: rgba(2, 7, 10, 0.95);
+  --line: rgba(45, 136, 254, 0.18);
+  --text: rgb(255, 217, 0);
+  --muted: #ffffff;
+  --blue: #233d4d;
+  --red: #2d42fe;
+  --green: #233d4d;
+  --gold: #2d6ffe;
+  --silver: #ffee00;
+  --shadow: 0 30px 80px rgba(0, 0, 0, 0.48);
+  --radius: 20px;
+  --body-glow-a: rgba(45, 115, 254, 0.24);
+  --body-glow-b: rgba(35, 61, 77, 0.28);
+  --body-glow-c: rgba(234, 236, 240, 0.12);
+  --body-gradient: linear-gradient(135deg, #000000 0%, #071118 22%, #233d4d 52%, #10212c 76%, #000000 100%);
+  --body-overlay-top: rgba(234, 236, 240, 0.045);
+  --body-grid-line: rgba(234, 236, 240, 0.02);
+  --topbar-bg: rgba(2, 7, 10, 0.86);
+  --topbar-line: rgba(45, 132, 254, 0.14);
+  --left-glow: rgba(45, 136, 254, 0.46);
+  --right-glow: rgba(35, 61, 77, 0.4);
+  --hero-field-glow: rgba(45, 129, 254, 0.16);
+  --hero-subtitle-color: #eaecf0;
+  --hero-rail-bg: linear-gradient(90deg, rgba(45, 118, 254, 0.16), rgba(35, 61, 77, 0.24), rgba(234, 236, 240, 0.12));
+  --button-bg: linear-gradient(135deg, #233d4d, #031d57 56%, #eaecf0 100%);
+  --button-shadow: 0 18px 38px rgba(45, 146, 254, 0.22);
+  --orb-bg:
+    radial-gradient(circle at 30% 30%, rgba(234, 236, 240, 0.95), rgba(234, 236, 240, 0.22) 12%, rgba(45, 149, 254, 0.26) 18%, rgba(3, 9, 12, 0.94) 62%),
+    linear-gradient(135deg, rgba(35, 61, 77, 0.28), rgba(45, 142, 254, 0.22), rgba(0, 0, 0, 0.24));
+  --orb-shadow: inset 0 0 72px rgba(234, 236, 240, 0.08), 0 22px 58px rgba(0, 0, 0, 0.48);
+  --surface-ghost: rgba(234, 236, 240, 0.03);
+  --surface-ghost-strong: rgba(234, 236, 240, 0.07);
+  --round-block-bg: linear-gradient(135deg, rgba(35, 61, 77, 0.12), rgba(45, 108, 254, 0.08), rgba(234, 236, 240, 0.04));
+  --match-battle-bg: linear-gradient(180deg, rgba(254, 127, 45, 0.08), rgba(35, 61, 77, 0.24), rgba(2, 7, 10, 0.8));
+  --chip-bg: rgba(234, 236, 240, 0.06);
+  --panel-border-gradient: linear-gradient(135deg, rgba(234, 236, 240, 0.2), rgba(35, 61, 77, 0.24), rgba(45, 132, 254, 0.24), rgba(234, 236, 240, 0.08));
+  --focus-ring: rgba(45, 153, 254, 0.18);
+  --focus-border: rgba(45, 115, 254, 0.72);
+  --round-motion-strength: 1.18;
+  --theme-sweep: rgba(45, 115, 254, 0.16);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -1194,6 +1240,26 @@ textarea {
   text-align: center;
 }
 
+.shootout-picker {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025));
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.shootout-picker.is-required {
+  border-color: rgba(255, 209, 102, 0.46);
+  box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.12), 0 0 24px rgba(255, 209, 102, 0.08);
+}
+
+.admin-shootout-picker {
+  margin-top: 0.75rem;
+}
+
 .special-feature-panel {
   display: grid;
   gap: 0.6rem;
@@ -1314,6 +1380,11 @@ textarea {
   font-size: 0.88rem;
   font-weight: 800;
   letter-spacing: 0.05em;
+  line-height: 1;
+}
+
+.special-feature-emoji-icon {
+  font-size: 1.1rem;
   line-height: 1;
 }
 
@@ -2247,6 +2318,92 @@ body[data-round-theme="round-3"] .status-pill {
 body[data-round-theme="round-3"] .welcome-card,
 body[data-round-theme="round-3"] .round-group-block {
   box-shadow: inset 0 0 0 1px rgba(255, 226, 154, 0.06), 0 18px 36px rgba(20, 5, 8, 0.22);
+}
+
+body[data-round-theme="knockout-finals"] .hero-copy h1,
+body[data-round-theme="knockout-finals"] .section-heading h2,
+body[data-round-theme="knockout-finals"] .round-section-header h3 {
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 28px rgba(254, 127, 45, 0.18);
+}
+
+body[data-round-theme="knockout-finals"] .hero-subtitle {
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  transform: translateY(-2px);
+}
+
+body[data-round-theme="knockout-finals"] .score-orb-ring {
+  border-style: solid;
+  border-color: rgba(254, 127, 45, 0.26);
+  animation-duration: 9.8s;
+}
+
+body[data-round-theme="knockout-finals"] .stadium-glow {
+  opacity: 0.24;
+  animation: emberPulse 6.4s ease-in-out infinite alternate;
+}
+
+body[data-round-theme="knockout-finals"] .hero-logo-track {
+  animation-duration: 20s;
+}
+
+body[data-round-theme="knockout-finals"] .primary-button:hover,
+body[data-round-theme="knockout-finals"] .secondary-button:hover,
+body[data-round-theme="knockout-finals"] .ghost-button:hover,
+body[data-round-theme="knockout-finals"] .match-card:hover,
+body[data-round-theme="knockout-finals"] .group-card:hover,
+body[data-round-theme="knockout-finals"] .stat-card:hover {
+  transform: translateY(-4px) scale(1.012);
+}
+
+body[data-round-theme="knockout-finals"] .round-section,
+body[data-round-theme="knockout-finals"] .round-group-block,
+body[data-round-theme="knockout-finals"] .match-card,
+body[data-round-theme="knockout-finals"] .group-card {
+  animation: round2Rise 520ms ease both;
+}
+
+body[data-round-theme="knockout-finals"] .round-section:nth-child(2n),
+body[data-round-theme="knockout-finals"] .round-group-block:nth-child(2n),
+body[data-round-theme="knockout-finals"] .match-card:nth-child(2n),
+body[data-round-theme="knockout-finals"] .group-card:nth-child(2n) {
+  animation-delay: 70ms;
+}
+
+body[data-round-theme="knockout-finals"] .match-card::after,
+body[data-round-theme="knockout-finals"] .group-card::after,
+body[data-round-theme="knockout-finals"] .stat-card::after {
+  content: "";
+  position: absolute;
+  inset: -30%;
+  background: linear-gradient(120deg, transparent 34%, var(--theme-sweep) 50%, transparent 66%);
+  transform: translateX(-65%) rotate(8deg);
+  pointer-events: none;
+  animation: clashSweep 5s ease-in-out infinite;
+}
+
+body[data-round-theme="knockout-finals"] .match-battle {
+  box-shadow: inset 0 0 0 1px rgba(254, 127, 45, 0.07), 0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+body[data-round-theme="knockout-finals"] .countdown-badge,
+body[data-round-theme="knockout-finals"] .chip,
+body[data-round-theme="knockout-finals"] .status-pill {
+  box-shadow: inset 0 0 0 1px rgba(254, 127, 45, 0.06), 0 0 24px rgba(35, 61, 77, 0.12);
+}
+
+body[data-round-theme="knockout-finals"] .welcome-card,
+body[data-round-theme="knockout-finals"] .round-group-block,
+body[data-round-theme="knockout-finals"] .shootout-picker,
+body[data-round-theme="knockout-finals"] .special-feature-panel {
+  box-shadow: inset 0 0 0 1px rgba(234, 236, 240, 0.06), 0 18px 36px rgba(0, 0, 0, 0.24);
+}
+
+body[data-round-theme="knockout-finals"] .special-feature-button.is-active {
+  border-color: rgba(254, 127, 45, 0.78);
+  background: linear-gradient(135deg, rgba(254, 127, 45, 0.22), rgba(35, 61, 77, 0.18), rgba(234, 236, 240, 0.08));
+  box-shadow: 0 0 0 1px rgba(254, 127, 45, 0.18), 0 0 26px rgba(254, 127, 45, 0.16);
 }
 
 .toast.success {
