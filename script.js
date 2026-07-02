@@ -763,6 +763,15 @@ async function applySharedMutation(mutator, options = {}) {
     }
   }
 
+  const latestRemote = await fetchSharedState({ silent: true });
+  if (latestRemote) {
+    persistence.revision = Number(latestRemote.revision || 0);
+    state = latestRemote.state ? normalizeStoredState(latestRemote.state) : createDefaultState();
+    saveLocalSharedState(state);
+    reconcileSessionState();
+    recalculatePoints();
+  }
+
   const maxAttempts = 3;
   let lastError = null;
 
@@ -1627,8 +1636,9 @@ async function handleAdminMatchUpdate(form) {
   const predictionDeadline = deadlineRaw ? parseDateTimeLocal(deadlineRaw) : calculateDeadlineFromMatchDate(matchDate);
   const actualScoreA = actualScoreAValue === "" ? null : parseScoreInput(actualScoreAValue);
   const actualScoreB = actualScoreBValue === "" ? null : parseScoreInput(actualScoreBValue);
+  const existingPenaltyWinner = normalizeKnockoutWinnerChoice(match.actualPenaltyWinner);
   const actualPenaltyWinner = requiresKnockoutWinner(match, actualScoreA, actualScoreB)
-    ? normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw)
+    ? (normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw) || existingPenaltyWinner)
     : "";
 
   if (!matchDate || !predictionDeadline) {
@@ -1657,10 +1667,15 @@ async function handleAdminMatchUpdate(form) {
       throw new Error("Match not found");
     }
 
+    const savedPenaltyWinner = normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner);
+    const nextPenaltyWinner = (isFinished && requiresKnockoutWinner(draftMatch, actualScoreA, actualScoreB))
+      ? (actualPenaltyWinner || savedPenaltyWinner || null)
+      : null;
+
     const resultChanged = (
       draftMatch.actualScoreA !== actualScoreA
       || draftMatch.actualScoreB !== actualScoreB
-      || normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner) !== actualPenaltyWinner
+      || normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner) !== normalizeKnockoutWinnerChoice(nextPenaltyWinner)
       || Boolean(draftMatch.wentToExtraTime) !== Boolean(wentToExtraTime)
       || draftMatch.isFinished !== isFinished
     );
@@ -1670,9 +1685,7 @@ async function handleAdminMatchUpdate(form) {
     draftMatch.predictionDeadline = predictionDeadline;
     draftMatch.actualScoreA = actualScoreA;
     draftMatch.actualScoreB = actualScoreB;
-    draftMatch.actualPenaltyWinner = (nextResultReady && requiresKnockoutWinner(draftMatch, actualScoreA, actualScoreB))
-      ? actualPenaltyWinner
-      : null;
+    draftMatch.actualPenaltyWinner = nextPenaltyWinner;
     draftMatch.wentToExtraTime = nextResultReady ? Boolean(wentToExtraTime) : false;
     draftMatch.isFinished = isFinished;
     if (nextResultReady && resultChanged) {
@@ -2297,13 +2310,25 @@ async function writeToFirebaseBackend(backend, nextState, baseRevision) {
   });
 
   if (response.status === 412) {
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    const latest = await readFromSharedBackend(backend).catch(() => null);
+    const latestPayload = latest?.payload || null;
+    const conflictPayload = isSharedEnvelopePayload(payload)
+      ? payload
+      : (isSharedEnvelopePayload(latestPayload) ? latestPayload : null);
+
     return {
       ok: false,
       conflict: true,
-      revision: Number(payload?.revision || 0),
-      state: payload?.state || createDefaultState(),
-      etag: extractEtag(response),
+      revision: Number(conflictPayload?.revision || baseRevision),
+      state: conflictPayload?.state || nextState,
+      etag: latest?.etag || extractEtag(response),
       message: "Shared data changed before this save completed."
     };
   }
@@ -2315,11 +2340,42 @@ async function writeToFirebaseBackend(backend, nextState, baseRevision) {
     };
   }
 
-  const payload = await response.json();
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+
+  const normalizedPayload = isSharedEnvelopePayload(payload)
+    ? payload
+    : nextEnvelope;
+
   return {
-    ...payload,
+    ...normalizedPayload,
     etag: extractEtag(response)
   };
+}
+
+function isSharedEnvelopePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  if (!("state" in payload) || !payload.state || typeof payload.state !== "object") {
+    return false;
+  }
+
+  return hasRequiredStateCollections(payload.state);
+}
+
+function hasRequiredStateCollections(candidateState) {
+  if (!candidateState || typeof candidateState !== "object") {
+    return false;
+  }
+
+  return ["players", "groups", "matches", "matchPredictions", "groupPredictions"]
+    .every((key) => Array.isArray(candidateState[key]));
 }
 
 function buildSharedStateGetUrl(endpoint) {
