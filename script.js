@@ -3,6 +3,7 @@ const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
 const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
 const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
+const ADMIN_SESSION_CHECK_INTERVAL_MS = 1000;
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -211,6 +212,7 @@ const uiState = {
   leaderboardFlashUntil: 0,
   timerId: null,
   syncTimerId: null,
+  adminSessionTimerId: null,
   notificationsOpen: false,
   chatOpen: false,
   chatEmojiOpen: false,
@@ -262,6 +264,7 @@ async function init() {
   renderAll();
   startCountdownLoop();
   startSharedSyncLoop();
+  startAdminSessionMonitor();
 }
 
 function createDefaultState() {
@@ -584,6 +587,23 @@ async function refreshAdminSessionStatus({ silent = true } = {}) {
   }
 
   return result;
+}
+
+async function ensureAdminAccess({ silent = true } = {}) {
+  if (!sessionState.adminUnlocked) {
+    renderAdmin();
+    if (!silent) {
+      showToast("Enter the admin password to continue", "error");
+    }
+    return false;
+  }
+
+  await refreshAdminSessionStatus({ silent });
+  if (!sessionState.adminUnlocked) {
+    return false;
+  }
+
+  return true;
 }
 
 function normalizeStoredState(parsed, recoveryState = null) {
@@ -1194,6 +1214,20 @@ function startSharedSyncLoop() {
   });
 }
 
+function startAdminSessionMonitor() {
+  if (uiState.adminSessionTimerId) {
+    window.clearInterval(uiState.adminSessionTimerId);
+  }
+
+  uiState.adminSessionTimerId = window.setInterval(() => {
+    if (!sessionState.adminUnlocked) {
+      return;
+    }
+
+    void refreshAdminSessionStatus({ silent: true });
+  }, ADMIN_SESSION_CHECK_INTERVAL_MS);
+}
+
 function shouldDeferSharedRefresh() {
   const activeElement = document.activeElement;
   return Boolean(activeElement?.closest(".match-form, .group-form, .admin-match-form, .admin-player-prediction-form, .admin-group-form, .chat-form"));
@@ -1248,6 +1282,7 @@ function bindEvents() {
   });
   document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
+  document.addEventListener("focusin", handleFocusIn);
   document.addEventListener("keydown", handleKeydown);
 }
 
@@ -1291,18 +1326,27 @@ async function handleSubmit(event) {
 
   if (form.matches(".admin-match-form")) {
     event.preventDefault();
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     await handleAdminMatchUpdate(form);
     return;
   }
 
   if (form.matches(".admin-player-prediction-form")) {
     event.preventDefault();
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     await handleAdminPlayerPredictionUpdate(form);
     return;
   }
 
   if (form.matches(".admin-group-form")) {
     event.preventDefault();
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     await handleAdminGroupUpdate(form);
   }
 }
@@ -1361,6 +1405,9 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='calculate-points']")) {
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     recalculatePoints();
     uiState.leaderboardFlashUntil = Date.now() + 1500;
     renderAll();
@@ -1369,6 +1416,9 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='reset-data']")) {
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     const confirmed = window.confirm("Reset all players, predictions, and results?");
     if (!confirmed) {
       return;
@@ -1397,11 +1447,17 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='export-leaderboard']")) {
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     exportLeaderboard();
     return;
   }
 
   if (actionTarget.matches("[data-action='delete-player']")) {
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     const select = document.getElementById("adminPlayerDelete");
     const playerId = String(select?.value || "");
     if (!playerId) {
@@ -1453,6 +1509,23 @@ function handleKeydown(event) {
   }
 }
 
+function handleFocusIn(event) {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  if (!sessionState.adminUnlocked) {
+    return;
+  }
+
+  if (!target.closest("#adminWorkspace, #adminGate")) {
+    return;
+  }
+
+  void ensureAdminAccess({ silent: true });
+}
+
 function handleInput(event) {
   if (event.target.id === "chatInput") {
     renderChatCharacterCount();
@@ -1466,22 +1539,27 @@ function handleInput(event) {
 
   const adminMatchForm = event.target.closest(".admin-match-form");
   if (adminMatchForm) {
+    void ensureAdminAccess({ silent: true });
     syncAdminMatchFormState(adminMatchForm);
   }
 
   const adminPlayerPredictionForm = event.target.closest(".admin-player-prediction-form");
   if (adminPlayerPredictionForm) {
+    void ensureAdminAccess({ silent: true });
     syncAdminPlayerPredictionFormState(adminPlayerPredictionForm);
   }
 }
 
-function handleChange(event) {
+async function handleChange(event) {
   if (event.target.id === "importMatchesInput") {
     void importMatchesFromFile(event.target.files?.[0]);
     return;
   }
 
   if (event.target.id === "adminRoundFilter") {
+    if (!(await ensureAdminAccess({ silent: false }))) {
+      return;
+    }
     uiState.adminRoundFilter = String(event.target.value || "all");
     renderAdmin();
     return;
@@ -1494,11 +1572,17 @@ function handleChange(event) {
 
   const adminMatchForm = event.target.closest(".admin-match-form");
   if (adminMatchForm) {
+    if (!(await ensureAdminAccess({ silent: true }))) {
+      return;
+    }
     syncAdminMatchFormState(adminMatchForm);
   }
 
   const adminPlayerPredictionForm = event.target.closest(".admin-player-prediction-form");
   if (adminPlayerPredictionForm) {
+    if (!(await ensureAdminAccess({ silent: true }))) {
+      return;
+    }
     if (event.target.matches('select[name="playerId"]')) {
       uiState.adminPredictionPlayerByMatch[String(adminPlayerPredictionForm.dataset.matchId || "")] = String(event.target.value || "");
       loadAdminPlayerPredictionIntoForm(adminPlayerPredictionForm);
