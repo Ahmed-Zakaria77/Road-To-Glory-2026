@@ -262,7 +262,6 @@ async function init() {
   renderSyncBanner();
   bindEvents();
   await hydrateState();
-  await ensurePlayerSessionVersionMigration({ silent: true });
   await refreshAdminSessionStatus({ silent: true });
   recalculatePoints();
   populateMatchFilters();
@@ -695,10 +694,6 @@ function getPlayerSessionVersion(sourceState = state) {
   return String(sourceState?.playerSessionVersion || PLAYER_SESSION_VERSION);
 }
 
-function getStoredPlayerSessionVersion(sourceState = state) {
-  return String(sourceState?.playerSessionVersion || "");
-}
-
 function hasPlayerSessionMismatch(sourceState = state) {
   if (!sessionState.activePlayerId) {
     return false;
@@ -732,73 +727,6 @@ function ensurePlayerAccess({ silent = true, rerender = true } = {}) {
   return player;
 }
 
-function rotatePlayerIdentifiers(sourceState) {
-  const playerIdMap = new Map();
-
-  sourceState.players = sourceState.players.map((player) => {
-    const oldPlayerId = String(player?.id || "");
-    const nextPlayerId = createId("player");
-    playerIdMap.set(oldPlayerId, nextPlayerId);
-    return {
-      ...player,
-      id: nextPlayerId
-    };
-  });
-
-  sourceState.matchPredictions = sourceState.matchPredictions.map((prediction) => ({
-    ...prediction,
-    playerId: playerIdMap.get(String(prediction.playerId || "")) || String(prediction.playerId || "")
-  }));
-
-  sourceState.groupPredictions = sourceState.groupPredictions.map((prediction) => ({
-    ...prediction,
-    playerId: playerIdMap.get(String(prediction.playerId || "")) || String(prediction.playerId || "")
-  }));
-
-  sourceState.chatMessages = sourceState.chatMessages.map((message) => ({
-    ...message,
-    playerId: playerIdMap.get(String(message.playerId || "")) || String(message.playerId || ""),
-    reactions: Array.isArray(message.reactions)
-      ? message.reactions.map((reaction) => ({
-        ...reaction,
-        playerId: playerIdMap.get(String(reaction.playerId || "")) || String(reaction.playerId || "")
-      }))
-      : []
-  }));
-
-  sourceState.playerSessionVersion = PLAYER_SESSION_VERSION;
-  return sourceState;
-}
-
-async function ensurePlayerSessionVersionMigration({ silent = true } = {}) {
-  if (getStoredPlayerSessionVersion(state) === PLAYER_SESSION_VERSION) {
-    return true;
-  }
-
-  if (!persistence.backendAvailable) {
-    return false;
-  }
-
-  const result = await applySharedMutation((draftState) => {
-    if (getStoredPlayerSessionVersion(draftState) === PLAYER_SESSION_VERSION) {
-      return { migrated: false };
-    }
-
-    rotatePlayerIdentifiers(draftState);
-    return { migrated: true };
-  }, { silent });
-
-  if (!result.ok) {
-    return false;
-  }
-
-  if (result.result?.migrated && !silent) {
-    showToast("All player sessions were locked. Everyone must log in again.", "success");
-  }
-
-  return true;
-}
-
 function normalizeStoredState(parsed, recoveryState = null) {
   const baseState = {
     players: Array.isArray(parsed.players) ? parsed.players.map(normalizePlayer) : [],
@@ -808,7 +736,7 @@ function normalizeStoredState(parsed, recoveryState = null) {
     groupPredictions: Array.isArray(parsed.groupPredictions) ? parsed.groupPredictions : [],
     chatMessages: normalizeChatMessages(parsed.chatMessages),
     scheduleVersion: scheduleSource.version,
-    playerSessionVersion: String(parsed.playerSessionVersion || "")
+    playerSessionVersion: String(parsed.playerSessionVersion || PLAYER_SESSION_VERSION)
   };
 
   const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
@@ -1451,9 +1379,6 @@ async function syncSharedState({ silent = true } = {}) {
   saveLocalSharedState(state);
   reconcileSessionState();
   recalculatePoints();
-  if (getStoredPlayerSessionVersion(state) !== PLAYER_SESSION_VERSION) {
-    await ensurePlayerSessionVersionMigration({ silent: true });
-  }
   if (remote.state) {
     void repairRecoveredKnockoutState(remote.state, state);
   }
