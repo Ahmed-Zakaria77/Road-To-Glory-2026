@@ -4,6 +4,7 @@ const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
 const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_SESSION_CHECK_INTERVAL_MS = 1000;
+const PLAYER_SESSION_VERSION = "2026-07-03-force-login-1";
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -275,7 +276,8 @@ function createDefaultState() {
     matchPredictions: [],
     groupPredictions: [],
     chatMessages: [],
-    scheduleVersion: scheduleSource.version
+    scheduleVersion: scheduleSource.version,
+    playerSessionVersion: PLAYER_SESSION_VERSION
   };
 }
 
@@ -307,6 +309,7 @@ function loadSessionState() {
     const parsed = JSON.parse(raw);
     return {
       activePlayerId: String(parsed?.activePlayerId || ""),
+      playerSessionVersion: String(parsed?.playerSessionVersion || ""),
       adminUnlocked: Boolean(parsed?.adminUnlocked),
       adminSessionToken: String(parsed?.adminSessionToken || ""),
       adminSessionVersion: String(parsed?.adminSessionVersion || ""),
@@ -323,6 +326,7 @@ function loadSessionState() {
 function createDefaultSessionState() {
   return {
     activePlayerId: "",
+    playerSessionVersion: "",
     adminUnlocked: false,
     adminSessionToken: "",
     adminSessionVersion: "",
@@ -494,6 +498,21 @@ function saveSessionState() {
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionState));
 }
 
+function clearPlayerSession({ toastMessage = "", toastType = "error", rerender = false } = {}) {
+  const hadActivePlayer = Boolean(sessionState.activePlayerId);
+  sessionState.activePlayerId = "";
+  sessionState.playerSessionVersion = "";
+  saveSessionState();
+
+  if (rerender) {
+    renderAll();
+  }
+
+  if (toastMessage && hadActivePlayer) {
+    showToast(toastMessage, toastType);
+  }
+}
+
 function clearAdminSession({ toastMessage = "", toastType = "error", rerender = false } = {}) {
   const wasUnlocked = Boolean(sessionState.adminUnlocked);
   sessionState.adminUnlocked = false;
@@ -606,6 +625,43 @@ async function ensureAdminAccess({ silent = true } = {}) {
   return true;
 }
 
+function getPlayerSessionVersion(sourceState = state) {
+  return String(sourceState?.playerSessionVersion || PLAYER_SESSION_VERSION);
+}
+
+function hasPlayerSessionMismatch(sourceState = state) {
+  if (!sessionState.activePlayerId) {
+    return false;
+  }
+
+  return String(sessionState.playerSessionVersion || "") !== getPlayerSessionVersion(sourceState);
+}
+
+function ensurePlayerAccess({ silent = true, rerender = true } = {}) {
+  let expired = false;
+  if (hasPlayerSessionMismatch()) {
+    expired = true;
+    clearPlayerSession({
+      toastMessage: silent ? "" : "Your session expired. Log in again with your player name and PIN.",
+      rerender
+    });
+    if (!silent) {
+      document.getElementById("login")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  const player = getActivePlayer();
+  if (!player) {
+    if (!silent && !expired) {
+      showToast("Log in with your player name and PIN to continue", "error");
+      document.getElementById("login")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    return null;
+  }
+
+  return player;
+}
+
 function normalizeStoredState(parsed, recoveryState = null) {
   const baseState = {
     players: Array.isArray(parsed.players) ? parsed.players.map(normalizePlayer) : [],
@@ -614,7 +670,8 @@ function normalizeStoredState(parsed, recoveryState = null) {
     matchPredictions: Array.isArray(parsed.matchPredictions) ? parsed.matchPredictions : [],
     groupPredictions: Array.isArray(parsed.groupPredictions) ? parsed.groupPredictions : [],
     chatMessages: normalizeChatMessages(parsed.chatMessages),
-    scheduleVersion: scheduleSource.version
+    scheduleVersion: scheduleSource.version,
+    playerSessionVersion: String(parsed.playerSessionVersion || PLAYER_SESSION_VERSION)
   };
 
   const scheduleChanged = parsed.scheduleVersion !== scheduleSource.version;
@@ -966,6 +1023,13 @@ function reconcileSessionState() {
   const validPlayerIds = new Set(state.players.map((player) => String(player.id)));
   if (!validPlayerIds.has(sessionState.activePlayerId)) {
     sessionState.activePlayerId = "";
+  }
+  sessionState.playerSessionVersion = String(sessionState.playerSessionVersion || "");
+  if (!sessionState.activePlayerId) {
+    sessionState.playerSessionVersion = "";
+  } else if (sessionState.playerSessionVersion !== getPlayerSessionVersion(state)) {
+    sessionState.activePlayerId = "";
+    sessionState.playerSessionVersion = "";
   }
 
   sessionState.adminSessionToken = String(sessionState.adminSessionToken || "");
@@ -1707,6 +1771,7 @@ async function handleLogin(form) {
   }
 
   sessionState.activePlayerId = result.result.playerId;
+  sessionState.playerSessionVersion = getPlayerSessionVersion();
   saveSessionState();
   renderAll();
   form.reset();
@@ -1714,10 +1779,8 @@ async function handleLogin(form) {
 }
 
 async function handleMatchPrediction(form) {
-  const player = getActivePlayer();
+  const player = ensurePlayerAccess({ silent: false });
   if (!player) {
-    showToast("Log in to save predictions", "error");
-    document.getElementById("login").scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
 
@@ -1834,10 +1897,8 @@ async function handleMatchPrediction(form) {
 }
 
 async function handleGroupPrediction(form) {
-  const player = getActivePlayer();
+  const player = ensurePlayerAccess({ silent: false });
   if (!player) {
-    showToast("Log in to save predictions", "error");
-    document.getElementById("login").scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
 
@@ -1919,10 +1980,8 @@ async function handleGroupPrediction(form) {
 }
 
 async function handleChatMessage(form) {
-  const player = getActivePlayer();
+  const player = ensurePlayerAccess({ silent: false });
   if (!player) {
-    showToast("Log in first to use the player chat", "error");
-    document.getElementById("login").scrollIntoView({ behavior: "smooth", block: "start" });
     return;
   }
 
@@ -1968,9 +2027,8 @@ async function handleChatReaction(button) {
     return;
   }
 
-  const player = getActivePlayer();
+  const player = ensurePlayerAccess({ silent: false, rerender: false });
   if (!player) {
-    showToast("Log in first to react to chat messages", "error");
     return;
   }
 

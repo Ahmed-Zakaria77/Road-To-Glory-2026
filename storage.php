@@ -262,7 +262,8 @@ function sanitizeState($state): ?array
         'matches' => array_values($state['matches']),
         'matchPredictions' => array_values($state['matchPredictions']),
         'groupPredictions' => array_values($state['groupPredictions']),
-        'scheduleVersion' => (string) ($state['scheduleVersion'] ?? '')
+        'scheduleVersion' => (string) ($state['scheduleVersion'] ?? ''),
+        'playerSessionVersion' => (string) ($state['playerSessionVersion'] ?? '')
     ];
 }
 

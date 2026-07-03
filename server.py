@@ -63,6 +63,7 @@ def sanitize_state(state) -> dict | None:
         "matchPredictions": list(state["matchPredictions"]),
         "groupPredictions": list(state["groupPredictions"]),
         "scheduleVersion": str(state.get("scheduleVersion", "")),
+        "playerSessionVersion": str(state.get("playerSessionVersion", "")),
     }
 
 
