@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -18,8 +17,6 @@ import fcntl
 ROOT_DIR = Path(__file__).resolve().parent
 STATE_FILE = ROOT_DIR / ".shared-state.json"
 API_PATH = "/api/shared-state"
-ADMIN_PASSWORD_SHA256 = "556ea1b2f7420f2cd4e6d1d548f7389cdaf91535020c5917e16d2b3bf6b98844"
-ADMIN_TOKEN_SECRET = "wc2026-admin-token-v1"
 
 
 def build_default_envelope() -> dict:
@@ -63,48 +60,6 @@ def sanitize_state(state) -> dict | None:
         "matchPredictions": list(state["matchPredictions"]),
         "groupPredictions": list(state["groupPredictions"]),
         "scheduleVersion": str(state.get("scheduleVersion", "")),
-    }
-
-
-def build_admin_session_version() -> str:
-    latest_mtime_ns = 0
-    for path in ROOT_DIR.iterdir():
-        if path.is_file() and path.suffix in {".html", ".js", ".css", ".php", ".py"}:
-            latest_mtime_ns = max(latest_mtime_ns, path.stat().st_mtime_ns)
-
-    if latest_mtime_ns <= 0:
-        latest_mtime_ns = ROOT_DIR.joinpath("server.py").stat().st_mtime_ns
-
-    return str(latest_mtime_ns)
-
-
-def build_admin_session_token(version: str) -> str:
-    return hashlib.sha256(f"{version}:{ADMIN_TOKEN_SECRET}".encode("utf-8")).hexdigest()
-
-
-def authenticate_admin(password: str) -> dict:
-    password_hash = hashlib.sha256(password.encode("utf-8")).hexdigest()
-    if password_hash != ADMIN_PASSWORD_SHA256:
-        return {
-            "ok": False,
-            "error": "invalid_admin_password",
-            "message": "Wrong admin password.",
-        }
-
-    version = build_admin_session_version()
-    return {
-        "ok": True,
-        "adminSessionToken": build_admin_session_token(version),
-        "adminSessionVersion": version,
-    }
-
-
-def build_admin_status(token: str) -> dict:
-    version = build_admin_session_version()
-    return {
-        "ok": True,
-        "valid": bool(token) and token == build_admin_session_token(version),
-        "adminSessionVersion": version,
     }
 
 
@@ -152,23 +107,12 @@ class WC2026Handler(SimpleHTTPRequestHandler):
             )
             return
 
-        action = payload.get("action")
-        if action == "authenticateAdmin":
-            result = authenticate_admin(str(payload.get("password", "")))
-            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.UNAUTHORIZED
-            self.respond_json(result, status=status)
-            return
-
-        if action == "adminStatus":
-            self.respond_json(build_admin_status(str(payload.get("token", ""))))
-            return
-
-        if action != "replaceState":
+        if payload.get("action") != "replaceState":
             self.respond_json(
                 {
                     "ok": False,
                     "error": "unsupported_action",
-                    "message": "Supported actions are replaceState, authenticateAdmin, and adminStatus.",
+                    "message": "Only replaceState is supported.",
                 },
                 status=HTTPStatus.BAD_REQUEST,
             )

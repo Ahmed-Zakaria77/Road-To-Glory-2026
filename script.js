@@ -1,13 +1,9 @@
 const STORAGE_KEY = "wc2026_predictor_2026_v2";
 const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
 const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
-const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
-const ADMIN_SESSION_CHECK_INTERVAL_MS = 1000;
-const CLIENT_ADMIN_TOKEN_PREFIX = "client-admin:";
-const CLIENT_ADMIN_SESSION_VERSION = "2026-07-03-admin-1";
-const CLIENT_ADMIN_PASSWORD_XOR_KEY = 17;
-const CLIENT_ADMIN_PASSWORD_BYTES = [32, 37, 40, 38];
+const ADMIN_PASSWORD_XOR_KEY = 17;
+const ADMIN_PASSWORD_BYTES = [32, 37, 40, 38];
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -216,7 +212,6 @@ const uiState = {
   leaderboardFlashUntil: 0,
   timerId: null,
   syncTimerId: null,
-  adminSessionTimerId: null,
   notificationsOpen: false,
   chatOpen: false,
   chatEmojiOpen: false,
@@ -262,13 +257,11 @@ async function init() {
   renderSyncBanner();
   bindEvents();
   await hydrateState();
-  await refreshAdminSessionStatus({ silent: true });
   recalculatePoints();
   populateMatchFilters();
   renderAll();
   startCountdownLoop();
   startSharedSyncLoop();
-  startAdminSessionMonitor();
 }
 
 function createDefaultState() {
@@ -314,8 +307,6 @@ function loadSessionState() {
       activePlayerName: String(parsed?.activePlayerName || "").trim(),
       activePlayerPin: normalizePlayerPin(parsed?.activePlayerPin),
       adminUnlocked: Boolean(parsed?.adminUnlocked),
-      adminSessionToken: String(parsed?.adminSessionToken || ""),
-      adminSessionVersion: String(parsed?.adminSessionVersion || ""),
       notificationReadByPlayer: normalizeNotificationReadByPlayer(parsed?.notificationReadByPlayer),
       rankTrackingByPlayer: normalizeRankTrackingByPlayer(parsed?.rankTrackingByPlayer),
       chatLastSeenByPlayer: normalizeChatLastSeenByPlayer(parsed?.chatLastSeenByPlayer)
@@ -332,8 +323,6 @@ function createDefaultSessionState() {
     activePlayerName: "",
     activePlayerPin: "",
     adminUnlocked: false,
-    adminSessionToken: "",
-    adminSessionVersion: "",
     notificationReadByPlayer: {},
     rankTrackingByPlayer: {},
     chatLastSeenByPlayer: {}
@@ -502,178 +491,10 @@ function saveSessionState() {
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionState));
 }
 
-function clearAdminSession({ toastMessage = "", toastType = "error", rerender = false } = {}) {
-  const wasUnlocked = Boolean(sessionState.adminUnlocked);
-  sessionState.adminUnlocked = false;
-  sessionState.adminSessionToken = "";
-  sessionState.adminSessionVersion = "";
-  saveSessionState();
-
-  if (rerender) {
-    renderAdmin();
-  }
-
-  if (toastMessage && wasUnlocked) {
-    showToast(toastMessage, toastType);
-  }
-}
-
-function getAdminAuthEndpointCandidates() {
-  return ADMIN_AUTH_ENDPOINTS.slice();
-}
-
-function getClientAdminPassword() {
-  return CLIENT_ADMIN_PASSWORD_BYTES
-    .map((value) => String.fromCharCode(value ^ CLIENT_ADMIN_PASSWORD_XOR_KEY))
+function getAdminPassword() {
+  return ADMIN_PASSWORD_BYTES
+    .map((value) => String.fromCharCode(value ^ ADMIN_PASSWORD_XOR_KEY))
     .join("");
-}
-
-function getClientAdminSessionVersion() {
-  return CLIENT_ADMIN_SESSION_VERSION;
-}
-
-function buildClientAdminSessionToken(version = getClientAdminSessionVersion()) {
-  return `${CLIENT_ADMIN_TOKEN_PREFIX}${version}`;
-}
-
-async function requestClientAdminAuth(payload) {
-  const action = String(payload?.action || "");
-
-  if (action === "authenticateAdmin") {
-    if (String(payload?.password || "") !== getClientAdminPassword()) {
-      return {
-        ok: false,
-        error: "invalid_admin_password",
-        message: "Wrong admin password."
-      };
-    }
-
-    const adminSessionVersion = getClientAdminSessionVersion();
-    return {
-      ok: true,
-      adminSessionToken: buildClientAdminSessionToken(adminSessionVersion),
-      adminSessionVersion
-    };
-  }
-
-  if (action === "adminStatus") {
-    const token = String(payload?.token || "");
-    if (!token.startsWith(CLIENT_ADMIN_TOKEN_PREFIX)) {
-      return null;
-    }
-
-    const adminSessionVersion = getClientAdminSessionVersion();
-    return {
-      ok: true,
-      valid: token === buildClientAdminSessionToken(adminSessionVersion),
-      adminSessionVersion
-    };
-  }
-
-  return null;
-}
-
-async function requestAdminAuth(payload) {
-  let lastError = null;
-
-  for (const endpoint of getAdminAuthEndpointCandidates()) {
-    try {
-      const response = await fetch(new URL(endpoint, window.location.href).toString(), {
-        method: "POST",
-        cache: "no-store",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-
-      let result = null;
-      try {
-        result = await response.json();
-      } catch (error) {
-        result = null;
-      }
-
-      if (!response.ok) {
-        if (result?.error === "invalid_admin_password") {
-          return result;
-        }
-
-        lastError = new Error(result?.message || `HTTP ${response.status}`);
-        continue;
-      }
-
-      if (result?.error === "unsupported_action" || result?.error === "not_found") {
-        lastError = new Error(result.message || "Admin auth action is not supported on this endpoint.");
-        continue;
-      }
-
-      return result;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  try {
-    const fallbackResult = await requestClientAdminAuth(payload);
-    if (fallbackResult) {
-      return fallbackResult;
-    }
-  } catch (error) {
-    lastError = error;
-  }
-
-  return {
-    ok: false,
-    error: "admin_auth_unavailable",
-    message: lastError?.message || "Admin authentication is unavailable right now."
-  };
-}
-
-async function refreshAdminSessionStatus({ silent = true } = {}) {
-  if (!sessionState.adminUnlocked || !sessionState.adminSessionToken) {
-    return null;
-  }
-
-  const result = await requestAdminAuth({
-    action: "adminStatus",
-    token: sessionState.adminSessionToken
-  });
-
-  if (!result?.ok) {
-    if (!silent) {
-      showToast(result?.message || "Admin authentication is unavailable right now.", "error");
-    }
-    return result;
-  }
-
-  const currentVersion = String(result.adminSessionVersion || "");
-  const storedVersion = String(sessionState.adminSessionVersion || "");
-  if (!result.valid || !currentVersion || storedVersion !== currentVersion) {
-    clearAdminSession({
-      toastMessage: "Admin locked. Enter the password again after the latest app update.",
-      rerender: true
-    });
-  }
-
-  return result;
-}
-
-async function ensureAdminAccess({ silent = true } = {}) {
-  if (!sessionState.adminUnlocked) {
-    renderAdmin();
-    if (!silent) {
-      showToast("Enter the admin password to continue", "error");
-    }
-    return false;
-  }
-
-  await refreshAdminSessionStatus({ silent });
-  if (!sessionState.adminUnlocked) {
-    return false;
-  }
-
-  return true;
 }
 
 function normalizeStoredState(parsed, recoveryState = null) {
@@ -1034,28 +855,11 @@ function reconcilePredictions(nextState) {
 
 function reconcileSessionState() {
   const validPlayerIds = new Set(state.players.map((player) => String(player.id)));
-  if (!validPlayerIds.has(sessionState.activePlayerId)) {
-    const fallbackPlayer = state.players.find((player) => {
-      const sameName = normalizeName(player?.name) === normalizeName(sessionState.activePlayerName);
-      const samePin = normalizePlayerPin(player?.pin) === normalizePlayerPin(sessionState.activePlayerPin);
-      return sameName && samePin;
-    }) || null;
-
-    sessionState.activePlayerId = fallbackPlayer ? String(fallbackPlayer.id) : "";
-  }
-  sessionState.activePlayerName = String(sessionState.activePlayerName || "").trim();
-  sessionState.activePlayerPin = normalizePlayerPin(sessionState.activePlayerPin);
-  if (!sessionState.activePlayerId) {
-    sessionState.activePlayerName = "";
-    sessionState.activePlayerPin = "";
-  }
-
-  sessionState.adminSessionToken = String(sessionState.adminSessionToken || "");
-  sessionState.adminSessionVersion = String(sessionState.adminSessionVersion || "");
-  if (!sessionState.adminUnlocked || !sessionState.adminSessionToken || !sessionState.adminSessionVersion) {
-    sessionState.adminUnlocked = false;
-    sessionState.adminSessionToken = "";
-    sessionState.adminSessionVersion = "";
+  const resolvedPlayer = resolveSessionPlayer();
+  if (resolvedPlayer) {
+    sessionState.activePlayerId = String(resolvedPlayer.id);
+  } else if (!validPlayerIds.has(String(sessionState.activePlayerId || ""))) {
+    sessionState.activePlayerId = "";
   }
 
   if (!sessionState.notificationReadByPlayer || typeof sessionState.notificationReadByPlayer !== "object") {
@@ -1296,28 +1100,12 @@ function startSharedSyncLoop() {
   });
 }
 
-function startAdminSessionMonitor() {
-  if (uiState.adminSessionTimerId) {
-    window.clearInterval(uiState.adminSessionTimerId);
-  }
-
-  uiState.adminSessionTimerId = window.setInterval(() => {
-    if (!sessionState.adminUnlocked) {
-      return;
-    }
-
-    void refreshAdminSessionStatus({ silent: true });
-  }, ADMIN_SESSION_CHECK_INTERVAL_MS);
-}
-
 function shouldDeferSharedRefresh() {
   const activeElement = document.activeElement;
   return Boolean(activeElement?.closest(".match-form, .group-form, .admin-match-form, .admin-player-prediction-form, .admin-group-form, .chat-form"));
 }
 
 async function syncSharedState({ silent = true } = {}) {
-  await refreshAdminSessionStatus({ silent: true });
-
   if (shouldDeferSharedRefresh()) {
     return;
   }
@@ -1364,7 +1152,6 @@ function bindEvents() {
   });
   document.addEventListener("input", handleInput);
   document.addEventListener("change", handleChange);
-  document.addEventListener("focusin", handleFocusIn);
   document.addEventListener("keydown", handleKeydown);
 }
 
@@ -1402,33 +1189,24 @@ async function handleSubmit(event) {
 
   if (form.matches(".admin-login-form")) {
     event.preventDefault();
-    await handleAdminLogin(form);
+    handleAdminLogin(form);
     return;
   }
 
   if (form.matches(".admin-match-form")) {
     event.preventDefault();
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     await handleAdminMatchUpdate(form);
     return;
   }
 
   if (form.matches(".admin-player-prediction-form")) {
     event.preventDefault();
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     await handleAdminPlayerPredictionUpdate(form);
     return;
   }
 
   if (form.matches(".admin-group-form")) {
     event.preventDefault();
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     await handleAdminGroupUpdate(form);
   }
 }
@@ -1487,9 +1265,6 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='calculate-points']")) {
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     recalculatePoints();
     uiState.leaderboardFlashUntil = Date.now() + 1500;
     renderAll();
@@ -1498,9 +1273,6 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='reset-data']")) {
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     const confirmed = window.confirm("Reset all players, predictions, and results?");
     if (!confirmed) {
       return;
@@ -1529,17 +1301,11 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='export-leaderboard']")) {
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     exportLeaderboard();
     return;
   }
 
   if (actionTarget.matches("[data-action='delete-player']")) {
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     const select = document.getElementById("adminPlayerDelete");
     const playerId = String(select?.value || "");
     if (!playerId) {
@@ -1580,7 +1346,9 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='lock-admin']")) {
-    clearAdminSession({ rerender: true });
+    sessionState.adminUnlocked = false;
+    saveSessionState();
+    renderAdmin();
   }
 }
 
@@ -1591,23 +1359,6 @@ function handleKeydown(event) {
   if (event.key === "Escape" && uiState.chatOpen) {
     closeChatPanel();
   }
-}
-
-function handleFocusIn(event) {
-  const target = event.target;
-  if (!(target instanceof Element)) {
-    return;
-  }
-
-  if (!sessionState.adminUnlocked) {
-    return;
-  }
-
-  if (!target.closest("#adminWorkspace, #adminGate")) {
-    return;
-  }
-
-  void ensureAdminAccess({ silent: true });
 }
 
 function handleInput(event) {
@@ -1623,27 +1374,22 @@ function handleInput(event) {
 
   const adminMatchForm = event.target.closest(".admin-match-form");
   if (adminMatchForm) {
-    void ensureAdminAccess({ silent: true });
     syncAdminMatchFormState(adminMatchForm);
   }
 
   const adminPlayerPredictionForm = event.target.closest(".admin-player-prediction-form");
   if (adminPlayerPredictionForm) {
-    void ensureAdminAccess({ silent: true });
     syncAdminPlayerPredictionFormState(adminPlayerPredictionForm);
   }
 }
 
-async function handleChange(event) {
+function handleChange(event) {
   if (event.target.id === "importMatchesInput") {
     void importMatchesFromFile(event.target.files?.[0]);
     return;
   }
 
   if (event.target.id === "adminRoundFilter") {
-    if (!(await ensureAdminAccess({ silent: false }))) {
-      return;
-    }
     uiState.adminRoundFilter = String(event.target.value || "all");
     renderAdmin();
     return;
@@ -1656,17 +1402,11 @@ async function handleChange(event) {
 
   const adminMatchForm = event.target.closest(".admin-match-form");
   if (adminMatchForm) {
-    if (!(await ensureAdminAccess({ silent: true }))) {
-      return;
-    }
     syncAdminMatchFormState(adminMatchForm);
   }
 
   const adminPlayerPredictionForm = event.target.closest(".admin-player-prediction-form");
   if (adminPlayerPredictionForm) {
-    if (!(await ensureAdminAccess({ silent: true }))) {
-      return;
-    }
     if (event.target.matches('select[name="playerId"]')) {
       uiState.adminPredictionPlayerByMatch[String(adminPlayerPredictionForm.dataset.matchId || "")] = String(event.target.value || "");
       loadAdminPlayerPredictionIntoForm(adminPlayerPredictionForm);
@@ -2107,28 +1847,15 @@ async function handleChatReaction(button) {
   renderAll();
 }
 
-async function handleAdminLogin(form) {
+function handleAdminLogin(form) {
   const password = String(new FormData(form).get("password") || "");
-  const result = await requestAdminAuth({
-    action: "authenticateAdmin",
-    password
-  });
-
-  if (!result?.ok || !result.adminSessionToken || !result.adminSessionVersion) {
-    showToast(
-      result?.error === "invalid_admin_password"
-        ? "Wrong password"
-        : (result?.message || "Admin login unavailable"),
-      "error"
-    );
+  if (password !== getAdminPassword()) {
+    showToast("Wrong password", "error");
     return;
   }
 
   sessionState.adminUnlocked = true;
-  sessionState.adminSessionToken = String(result.adminSessionToken || "");
-  sessionState.adminSessionVersion = String(result.adminSessionVersion || "");
   saveSessionState();
-  form.reset();
   renderAdmin();
   showToast("Admin login success", "success");
 }
@@ -4701,7 +4428,7 @@ function renderAdmin() {
           <input id="adminPasswordInput" name="password" type="password" placeholder="Enter admin password" required>
           <button class="primary-button" type="submit">Unlock Admin</button>
         </div>
-        <p class="admin-help">Use the current admin password to manage results. After each new deployment, admin access locks again automatically.</p>
+        <p class="admin-help">Use the current app password to manage results and recalculate standings.</p>
       </form>
     `;
     dom.adminWorkspace.classList.add("hidden");
@@ -5189,7 +4916,32 @@ function getCurrentRoundMatch() {
 }
 
 function getActivePlayer() {
-  return getDerivedState().playerById.get(String(sessionState.activePlayerId || "")) || null;
+  const player = resolveSessionPlayer();
+  if (player && sessionState.activePlayerId !== String(player.id)) {
+    sessionState.activePlayerId = String(player.id);
+    saveSessionState();
+  }
+  return player;
+}
+
+function resolveSessionPlayer(sourceState = state) {
+  const derived = getDerivedState(sourceState);
+  const activePlayerId = String(sessionState.activePlayerId || "");
+  const playerById = derived.playerById.get(activePlayerId) || null;
+  if (playerById) {
+    return playerById;
+  }
+
+  const activePlayerName = normalizeName(sessionState.activePlayerName);
+  const activePlayerPin = normalizePlayerPin(sessionState.activePlayerPin);
+  if (!activePlayerName || !activePlayerPin) {
+    return null;
+  }
+
+  return sourceState.players.find((player) => (
+    normalizeName(player?.name) === activePlayerName
+    && normalizePlayerPin(player?.pin) === activePlayerPin
+  )) || null;
 }
 
 function getMatchPrediction(playerId, matchId, sourceState = state) {

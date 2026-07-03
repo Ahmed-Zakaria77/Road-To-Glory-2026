@@ -6,8 +6,6 @@ header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 const STORAGE_FILE = sys_get_temp_dir() . '/wc2026-shared-state.php';
 const STORAGE_PREFIX = "<?php exit; ?>\n";
-const ADMIN_PASSWORD_SHA256 = '556ea1b2f7420f2cd4e6d1d548f7389cdaf91535020c5917e16d2b3bf6b98844';
-const ADMIN_TOKEN_SECRET = 'wc2026-admin-token-v1';
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     respond(loadEnvelope());
@@ -17,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respond([
         'ok' => false,
         'error' => 'method_not_allowed',
-        'message' => 'Use GET to read or POST to save state or verify admin access.'
+        'message' => 'Use GET to read or POST to save state.'
     ], 405);
 }
 
@@ -31,16 +29,11 @@ if (!is_array($payload)) {
 }
 
 $action = (string) ($payload['action'] ?? '');
-$result = handleAdminAction($action, $payload);
-if ($result !== null) {
-    respond($result, $result['ok'] ? 200 : 401);
-}
-
 if ($action !== 'replaceState') {
     respond([
         'ok' => false,
         'error' => 'unsupported_action',
-        'message' => 'Supported actions are replaceState, authenticateAdmin, and adminStatus.'
+        'message' => 'Only replaceState is supported.'
     ], 400);
 }
 
@@ -55,71 +48,6 @@ if ($nextState === null) {
 }
 
 commitState($nextState, $baseRevision);
-
-function handleAdminAction(string $action, array $payload): ?array
-{
-    if ($action === 'authenticateAdmin') {
-        return authenticateAdmin((string) ($payload['password'] ?? ''));
-    }
-
-    if ($action === 'adminStatus') {
-        return buildAdminStatus((string) ($payload['token'] ?? ''));
-    }
-
-    return null;
-}
-
-function authenticateAdmin(string $password): array
-{
-    if (!hash_equals(ADMIN_PASSWORD_SHA256, hash('sha256', $password))) {
-        return [
-            'ok' => false,
-            'error' => 'invalid_admin_password',
-            'message' => 'Wrong admin password.'
-        ];
-    }
-
-    $version = buildAdminSessionVersion();
-    return [
-        'ok' => true,
-        'adminSessionToken' => buildAdminSessionToken($version),
-        'adminSessionVersion' => $version
-    ];
-}
-
-function buildAdminStatus(string $token): array
-{
-    $version = buildAdminSessionVersion();
-    return [
-        'ok' => true,
-        'valid' => $token !== '' && hash_equals(buildAdminSessionToken($version), $token),
-        'adminSessionVersion' => $version
-    ];
-}
-
-function buildAdminSessionVersion(): string
-{
-    $versionFiles = glob(__DIR__ . '/*.{html,js,css,php,py}', GLOB_BRACE) ?: [];
-    $latestModifiedAt = 0;
-
-    foreach ($versionFiles as $filePath) {
-        $modifiedAt = is_file($filePath) ? (int) filemtime($filePath) : 0;
-        if ($modifiedAt > $latestModifiedAt) {
-            $latestModifiedAt = $modifiedAt;
-        }
-    }
-
-    if ($latestModifiedAt <= 0) {
-        $latestModifiedAt = (int) filemtime(__FILE__);
-    }
-
-    return (string) $latestModifiedAt;
-}
-
-function buildAdminSessionToken(string $version): string
-{
-    return hash('sha256', $version . ':' . ADMIN_TOKEN_SECRET);
-}
 
 function commitState(array $state, int $baseRevision): void
 {
