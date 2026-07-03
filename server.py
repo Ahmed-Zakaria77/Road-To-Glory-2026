@@ -63,7 +63,6 @@ def sanitize_state(state) -> dict | None:
         "matchPredictions": list(state["matchPredictions"]),
         "groupPredictions": list(state["groupPredictions"]),
         "scheduleVersion": str(state.get("scheduleVersion", "")),
-        "playerSessionVersion": str(state.get("playerSessionVersion", "")),
     }
 
 
@@ -224,7 +223,6 @@ def commit_state(state: dict, base_revision: int) -> dict:
         try:
             current = read_envelope_locked(file_obj)
             current_revision = int((current or {}).get("revision", 0))
-            current_player_session_version = str(((current or {}).get("state") or {}).get("playerSessionVersion", ""))
 
             if current is not None and base_revision != current_revision:
                 return {
@@ -235,9 +233,6 @@ def commit_state(state: dict, base_revision: int) -> dict:
                     "revision": current_revision,
                     "state": current["state"],
                 }
-
-            if str(state.get("playerSessionVersion", "")) == "" and current_player_session_version:
-                state["playerSessionVersion"] = current_player_session_version
 
             next_envelope = {
                 "ok": True,
