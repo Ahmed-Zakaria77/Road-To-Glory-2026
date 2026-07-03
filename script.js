@@ -311,6 +311,8 @@ function loadSessionState() {
     const parsed = JSON.parse(raw);
     return {
       activePlayerId: String(parsed?.activePlayerId || ""),
+      activePlayerName: String(parsed?.activePlayerName || "").trim(),
+      activePlayerPin: normalizePlayerPin(parsed?.activePlayerPin),
       adminUnlocked: Boolean(parsed?.adminUnlocked),
       adminSessionToken: String(parsed?.adminSessionToken || ""),
       adminSessionVersion: String(parsed?.adminSessionVersion || ""),
@@ -327,6 +329,8 @@ function loadSessionState() {
 function createDefaultSessionState() {
   return {
     activePlayerId: "",
+    activePlayerName: "",
+    activePlayerPin: "",
     adminUnlocked: false,
     adminSessionToken: "",
     adminSessionVersion: "",
@@ -1031,7 +1035,19 @@ function reconcilePredictions(nextState) {
 function reconcileSessionState() {
   const validPlayerIds = new Set(state.players.map((player) => String(player.id)));
   if (!validPlayerIds.has(sessionState.activePlayerId)) {
-    sessionState.activePlayerId = "";
+    const fallbackPlayer = state.players.find((player) => {
+      const sameName = normalizeName(player?.name) === normalizeName(sessionState.activePlayerName);
+      const samePin = normalizePlayerPin(player?.pin) === normalizePlayerPin(sessionState.activePlayerPin);
+      return sameName && samePin;
+    }) || null;
+
+    sessionState.activePlayerId = fallbackPlayer ? String(fallbackPlayer.id) : "";
+  }
+  sessionState.activePlayerName = String(sessionState.activePlayerName || "").trim();
+  sessionState.activePlayerPin = normalizePlayerPin(sessionState.activePlayerPin);
+  if (!sessionState.activePlayerId) {
+    sessionState.activePlayerName = "";
+    sessionState.activePlayerPin = "";
   }
 
   sessionState.adminSessionToken = String(sessionState.adminSessionToken || "");
@@ -1553,6 +1569,8 @@ async function handleClick(event) {
 
     if (sessionState.activePlayerId === playerId) {
       sessionState.activePlayerId = "";
+      sessionState.activePlayerName = "";
+      sessionState.activePlayerPin = "";
       saveSessionState();
     }
 
@@ -1773,6 +1791,8 @@ async function handleLogin(form) {
   }
 
   sessionState.activePlayerId = result.result.playerId;
+  sessionState.activePlayerName = rawName;
+  sessionState.activePlayerPin = playerPin;
   saveSessionState();
   renderAll();
   form.reset();
