@@ -5,9 +5,9 @@ const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_SESSION_CHECK_INTERVAL_MS = 1000;
 const PLAYER_SESSION_VERSION = "2026-07-03-force-login-1";
-const ADMIN_PASSWORD_SHA256 = "556ea1b2f7420f2cd4e6d1d548f7389cdaf91535020c5917e16d2b3bf6b98844";
 const CLIENT_ADMIN_TOKEN_PREFIX = "client-admin:";
-const CLIENT_ADMIN_TOKEN_SALT = "wc2026-client-admin-v1";
+const CLIENT_ADMIN_PASSWORD_XOR_KEY = 17;
+const CLIENT_ADMIN_PASSWORD_BYTES = [32, 37, 40, 38];
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -537,18 +537,9 @@ function getAdminAuthEndpointCandidates() {
   return ADMIN_AUTH_ENDPOINTS.slice();
 }
 
-async function computeSha256Hex(value) {
-  if (!globalThis.crypto?.subtle || typeof TextEncoder === "undefined") {
-    throw new Error("Secure browser hashing is unavailable on this device.");
-  }
-
-  const buffer = await globalThis.crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(String(value || ""))
-  );
-
-  return Array.from(new Uint8Array(buffer))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
+function getClientAdminPassword() {
+  return CLIENT_ADMIN_PASSWORD_BYTES
+    .map((value) => String.fromCharCode(value ^ CLIENT_ADMIN_PASSWORD_XOR_KEY))
     .join("");
 }
 
@@ -556,17 +547,15 @@ function getClientAdminSessionVersion() {
   return `${PLAYER_SESSION_VERSION}-admin`;
 }
 
-async function buildClientAdminSessionToken(version = getClientAdminSessionVersion()) {
-  const digest = await computeSha256Hex(`${version}:${CLIENT_ADMIN_TOKEN_SALT}`);
-  return `${CLIENT_ADMIN_TOKEN_PREFIX}${digest}`;
+function buildClientAdminSessionToken(version = getClientAdminSessionVersion()) {
+  return `${CLIENT_ADMIN_TOKEN_PREFIX}${version}`;
 }
 
 async function requestClientAdminAuth(payload) {
   const action = String(payload?.action || "");
 
   if (action === "authenticateAdmin") {
-    const passwordHash = await computeSha256Hex(String(payload?.password || ""));
-    if (passwordHash !== ADMIN_PASSWORD_SHA256) {
+    if (String(payload?.password || "") !== getClientAdminPassword()) {
       return {
         ok: false,
         error: "invalid_admin_password",
@@ -577,7 +566,7 @@ async function requestClientAdminAuth(payload) {
     const adminSessionVersion = getClientAdminSessionVersion();
     return {
       ok: true,
-      adminSessionToken: await buildClientAdminSessionToken(adminSessionVersion),
+      adminSessionToken: buildClientAdminSessionToken(adminSessionVersion),
       adminSessionVersion
     };
   }
@@ -591,7 +580,7 @@ async function requestClientAdminAuth(payload) {
     const adminSessionVersion = getClientAdminSessionVersion();
     return {
       ok: true,
-      valid: token === await buildClientAdminSessionToken(adminSessionVersion),
+      valid: token === buildClientAdminSessionToken(adminSessionVersion),
       adminSessionVersion
     };
   }
