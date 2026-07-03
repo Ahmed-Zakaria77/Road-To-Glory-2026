@@ -486,7 +486,7 @@ function saveSessionState() {
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionState));
 }
 
-function normalizeStoredState(parsed) {
+function normalizeStoredState(parsed, recoveryState = null) {
   const baseState = {
     players: Array.isArray(parsed.players) ? parsed.players.map(normalizePlayer) : [],
     groups: scheduleSource.groups.map(cloneObject),
@@ -519,7 +519,103 @@ function normalizeStoredState(parsed) {
 
   syncGroupPredictionDeadlines(baseState.groups, baseState.matches);
   reconcilePredictions(baseState);
+  recoverMissingKnockoutMetadata(baseState, recoveryState);
+  recoverMissingSpecialFeatureSelections(baseState, recoveryState);
   return baseState;
+}
+
+function recoverMissingKnockoutMetadata(nextState, recoveryState) {
+  if (!recoveryState || !Array.isArray(recoveryState.matches)) {
+    return;
+  }
+
+  const recoveryMatchesById = new Map(
+    recoveryState.matches.map((match) => [String(match?.id || ""), match])
+  );
+
+  nextState.matches.forEach((match) => {
+    const recoveryMatch = recoveryMatchesById.get(String(match.id));
+    if (!recoveryMatch || !isKnockoutMatch(match)) {
+      return;
+    }
+
+    const sameResult = (
+      match.actualScoreA === recoveryMatch.actualScoreA
+      && match.actualScoreB === recoveryMatch.actualScoreB
+      && normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match)
+        === normalizeKnockoutWinnerChoice(recoveryMatch.actualPenaltyWinner, recoveryMatch)
+      && Boolean(match.isFinished) === Boolean(recoveryMatch.isFinished)
+    );
+
+    const sameResultVersion = (
+      (!match.resultUpdatedAt && !recoveryMatch.resultUpdatedAt)
+      || String(match.resultUpdatedAt || "") === String(recoveryMatch.resultUpdatedAt || "")
+    );
+
+    if (sameResult && sameResultVersion && !didMatchGoToExtraTime(match) && didMatchGoToExtraTime(recoveryMatch)) {
+      match.wentToExtraTime = true;
+      if (!match.resultUpdatedAt && recoveryMatch.resultUpdatedAt) {
+        match.resultUpdatedAt = recoveryMatch.resultUpdatedAt;
+      }
+    }
+  });
+}
+
+function recoverMissingSpecialFeatureSelections(nextState, recoveryState) {
+  if (!recoveryState || !Array.isArray(recoveryState.matchPredictions)) {
+    return;
+  }
+
+  const recoveryPredictionsByKey = new Map(
+    recoveryState.matchPredictions.map((prediction) => [
+      buildPredictionLookupKey(prediction?.playerId, prediction?.matchId),
+      prediction
+    ])
+  );
+  const recoveryMatchesById = new Map(
+    Array.isArray(recoveryState.matches)
+      ? recoveryState.matches.map((match) => [String(match?.id || ""), match])
+      : []
+  );
+  const nextMatchesById = new Map(
+    nextState.matches.map((match) => [String(match.id), match])
+  );
+
+  nextState.matchPredictions.forEach((prediction) => {
+    const match = nextMatchesById.get(String(prediction.matchId)) || null;
+    const recoveryPrediction = recoveryPredictionsByKey.get(
+      buildPredictionLookupKey(prediction.playerId, prediction.matchId)
+    ) || null;
+    const recoveryMatch = recoveryMatchesById.get(String(prediction.matchId)) || null;
+
+    if (!match || !recoveryPrediction || !recoveryMatch || !isSpecialFeatureMatch(match)) {
+      return;
+    }
+
+    const currentFeature = normalizeSpecialFeatureForMatch(prediction.specialFeature, match);
+    const recoveryFeature = normalizeSpecialFeatureForMatch(recoveryPrediction.specialFeature, recoveryMatch);
+    if (currentFeature || !recoveryFeature) {
+      return;
+    }
+
+    const samePrediction = (
+      prediction.submittedAt === recoveryPrediction.submittedAt
+      && prediction.predictedScoreA === recoveryPrediction.predictedScoreA
+      && prediction.predictedScoreB === recoveryPrediction.predictedScoreB
+      && normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner, match)
+        === normalizeKnockoutWinnerChoice(recoveryPrediction.predictedPenaltyWinner, recoveryMatch)
+    );
+
+    const shouldRecover = samePrediction;
+    if (!shouldRecover) {
+      return;
+    }
+
+    prediction.specialFeature = recoveryFeature;
+    prediction.specialFeatureTarget = recoveryFeature === "cleanSheetMaster"
+      ? normalizeSpecialFeatureTarget(recoveryPrediction.specialFeatureTarget)
+      : "";
+  });
 }
 
 function mergeStoredGroupsWithSchedule(storedGroups) {
@@ -594,7 +690,10 @@ function reconcilePredictions(nextState) {
       ...prediction,
       matchId: String(prediction.matchId),
       playerId: String(prediction.playerId),
-      predictedPenaltyWinner: normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner),
+      predictedPenaltyWinner: normalizeKnockoutWinnerChoice(
+        prediction.predictedPenaltyWinner,
+        nextState.matches.find((match) => String(match.id) === String(prediction.matchId)) || null
+      ),
       specialFeature: normalizeSpecialFeature(prediction.specialFeature),
       specialFeatureTarget: normalizeSpecialFeatureTarget(prediction.specialFeatureTarget),
       basePoints: Number(prediction.basePoints || 0),
@@ -650,9 +749,10 @@ function reconcileSessionState() {
 }
 
 async function hydrateState(options = {}) {
+  const localFallbackState = loadLocalSharedState();
   const response = await fetchSharedState(options);
   if (!response) {
-    state = loadLocalSharedState();
+    state = localFallbackState;
     reconcileSessionState();
     recalculatePoints();
     return;
@@ -661,13 +761,13 @@ async function hydrateState(options = {}) {
   persistence.backendAvailable = true;
   persistence.revision = Number(response.revision || 0);
   setPersistenceStatus("connected", "Shared storage connected. All devices see the same players and admin updates.");
-  state = response.state ? normalizeStoredState(response.state) : createDefaultState();
+  state = response.state ? normalizeStoredState(response.state, localFallbackState) : createDefaultState();
 
   if (!response.state) {
     const initialized = await commitSharedState(state, 0, options);
     if (initialized?.ok) {
       persistence.revision = initialized.revision;
-      state = normalizeStoredState(initialized.state);
+      state = normalizeStoredState(initialized.state, state);
     }
   }
 
@@ -751,7 +851,7 @@ async function applySharedMutation(mutator, options = {}) {
     const remote = await fetchSharedState({ silent: true });
     if (remote) {
       persistence.revision = Number(remote.revision || 0);
-      state = remote.state ? normalizeStoredState(remote.state) : createDefaultState();
+      state = remote.state ? normalizeStoredState(remote.state, state) : createDefaultState();
       saveLocalSharedState(state);
       reconcileSessionState();
       recalculatePoints();
@@ -766,7 +866,7 @@ async function applySharedMutation(mutator, options = {}) {
   const latestRemote = await fetchSharedState({ silent: true });
   if (latestRemote) {
     persistence.revision = Number(latestRemote.revision || 0);
-    state = latestRemote.state ? normalizeStoredState(latestRemote.state) : createDefaultState();
+    state = latestRemote.state ? normalizeStoredState(latestRemote.state, state) : createDefaultState();
     saveLocalSharedState(state);
     reconcileSessionState();
     recalculatePoints();
@@ -795,7 +895,7 @@ async function applySharedMutation(mutator, options = {}) {
     const saved = await commitSharedState(draftState, persistence.revision, options);
     if (saved?.ok) {
       persistence.revision = Number(saved.revision || persistence.revision);
-      state = normalizeStoredState(saved.state);
+      state = normalizeStoredState(saved.state, draftState);
       saveLocalSharedState(state);
       reconcileSessionState();
       recalculatePoints();
@@ -804,7 +904,7 @@ async function applySharedMutation(mutator, options = {}) {
 
     if (saved?.conflict) {
       persistence.revision = Number(saved.revision || persistence.revision);
-      state = normalizeStoredState(saved.state);
+      state = normalizeStoredState(saved.state, draftState);
       saveLocalSharedState(state);
       reconcileSessionState();
       recalculatePoints();
@@ -870,7 +970,7 @@ async function syncSharedState({ silent = true } = {}) {
   }
 
   persistence.revision = Number(remote.revision || persistence.revision);
-  state = normalizeStoredState(remote.state || createDefaultState());
+  state = normalizeStoredState(remote.state || createDefaultState(), state);
   saveLocalSharedState(state);
   reconcileSessionState();
   recalculatePoints();
@@ -1311,7 +1411,7 @@ async function handleMatchPrediction(form) {
   const predictedScoreA = parseScoreInput(formData.get("predictedScoreA"));
   const predictedScoreB = parseScoreInput(formData.get("predictedScoreB"));
   const predictedPenaltyWinner = requiresKnockoutWinner(match, predictedScoreA, predictedScoreB)
-    ? normalizeKnockoutWinnerChoice(formData.get("predictedPenaltyWinner"))
+    ? normalizeKnockoutWinnerChoice(formData.get("predictedPenaltyWinner"), match)
     : "";
   const specialFeature = isSpecialFeatureMatch(match)
     ? normalizeSpecialFeatureForMatch(formData.get("specialFeature"), match)
@@ -1624,7 +1724,7 @@ async function handleAdminMatchUpdate(form) {
   const isFinished = formData.get("isFinished") === "on";
   const wentToExtraTime = isKnockoutMatch(match) && (
     formData.get("wentToExtraTime") === "on"
-    || Boolean(normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw))
+    || Boolean(normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw, match))
   );
 
   if (!matchDateRaw) {
@@ -1636,9 +1736,9 @@ async function handleAdminMatchUpdate(form) {
   const predictionDeadline = deadlineRaw ? parseDateTimeLocal(deadlineRaw) : calculateDeadlineFromMatchDate(matchDate);
   const actualScoreA = actualScoreAValue === "" ? null : parseScoreInput(actualScoreAValue);
   const actualScoreB = actualScoreBValue === "" ? null : parseScoreInput(actualScoreBValue);
-  const existingPenaltyWinner = normalizeKnockoutWinnerChoice(match.actualPenaltyWinner);
+  const existingPenaltyWinner = normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match);
   const actualPenaltyWinner = requiresKnockoutWinner(match, actualScoreA, actualScoreB)
-    ? (normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw) || existingPenaltyWinner)
+    ? (normalizeKnockoutWinnerChoice(actualPenaltyWinnerRaw, match) || existingPenaltyWinner)
     : "";
 
   if (!matchDate || !predictionDeadline) {
@@ -1667,7 +1767,7 @@ async function handleAdminMatchUpdate(form) {
       throw new Error("Match not found");
     }
 
-    const savedPenaltyWinner = normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner);
+    const savedPenaltyWinner = normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner, draftMatch);
     const nextPenaltyWinner = (isFinished && requiresKnockoutWinner(draftMatch, actualScoreA, actualScoreB))
       ? (actualPenaltyWinner || savedPenaltyWinner || null)
       : null;
@@ -1675,7 +1775,7 @@ async function handleAdminMatchUpdate(form) {
     const resultChanged = (
       draftMatch.actualScoreA !== actualScoreA
       || draftMatch.actualScoreB !== actualScoreB
-      || normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner) !== normalizeKnockoutWinnerChoice(nextPenaltyWinner)
+      || normalizeKnockoutWinnerChoice(draftMatch.actualPenaltyWinner, draftMatch) !== normalizeKnockoutWinnerChoice(nextPenaltyWinner, draftMatch)
       || Boolean(draftMatch.wentToExtraTime) !== Boolean(wentToExtraTime)
       || draftMatch.isFinished !== isFinished
     );
@@ -1725,7 +1825,7 @@ async function handleAdminPlayerPredictionUpdate(form) {
   const predictedScoreA = parseScoreInput(formData.get("predictedScoreA"));
   const predictedScoreB = parseScoreInput(formData.get("predictedScoreB"));
   const predictedPenaltyWinner = requiresKnockoutWinner(match, predictedScoreA, predictedScoreB)
-    ? normalizeKnockoutWinnerChoice(formData.get("predictedPenaltyWinner"))
+    ? normalizeKnockoutWinnerChoice(formData.get("predictedPenaltyWinner"), match)
     : "";
   const specialFeature = isSpecialFeatureMatch(match)
     ? normalizeSpecialFeatureForMatch(formData.get("specialFeature"), match)
@@ -2641,7 +2741,7 @@ function renderSpecialFeatureTargetPicker(match, selectedFeature, selectedFeatur
 }
 
 function renderShootoutPicker(match, prediction, isLocked) {
-  const selectedWinner = normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner);
+  const selectedWinner = normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner, match);
   const shouldShow = requiresKnockoutWinner(match, prediction?.predictedScoreA ?? null, prediction?.predictedScoreB ?? null);
 
   return `
@@ -2897,7 +2997,7 @@ function syncMatchFormState(form, sharedContext = null) {
   const isOpen = isPredictionOpen(match.predictionDeadline);
   const initialScoreA = String(form.dataset.initialScoreA || "");
   const initialScoreB = String(form.dataset.initialScoreB || "");
-  const initialPenaltyWinner = normalizeKnockoutWinnerChoice(form.dataset.initialPenaltyWinner);
+  const initialPenaltyWinner = normalizeKnockoutWinnerChoice(form.dataset.initialPenaltyWinner, match);
   const initialSpecialFeature = normalizeSpecialFeatureForMatch(form.dataset.initialSpecialFeature, match);
   const initialSpecialFeatureTarget = normalizeSpecialFeatureTarget(form.dataset.initialSpecialFeatureTarget);
   const currentScoreA = String(form.elements.predictedScoreA?.value || "").trim();
@@ -3138,7 +3238,7 @@ function loadAdminPlayerPredictionIntoForm(form) {
   }
 
   if (shootoutWinnerSelect instanceof HTMLSelectElement) {
-    shootoutWinnerSelect.value = normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner);
+    shootoutWinnerSelect.value = normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner, match);
   }
 
   if (specialFeatureSelect instanceof HTMLSelectElement) {
@@ -3260,8 +3360,8 @@ function renderAdminPlayerPredictionEditor(match) {
               <span>Predicted penalty winner</span>
               <select name="predictedPenaltyWinner" data-role="admin-player-shootout-winner-select" ${requiresKnockoutWinner(match, prediction?.predictedScoreA ?? null, prediction?.predictedScoreB ?? null) ? "" : "disabled"}>
                 <option value="">Select winner</option>
-                <option value="teamA" ${normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner) === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
-                <option value="teamB" ${normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner) === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
+                <option value="teamA" ${normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner, match) === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
+                <option value="teamB" ${normalizeKnockoutWinnerChoice(prediction?.predictedPenaltyWinner, match) === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
               </select>
             </label>
             <p class="deadline-note">Needed only when the predicted knockout score ends level.</p>
@@ -4317,8 +4417,8 @@ function renderAdmin() {
                         <span>Penalty shootout winner</span>
                         <select name="actualPenaltyWinner" data-role="admin-shootout-winner-select" ${requiresKnockoutWinner(match, match.actualScoreA, match.actualScoreB) ? "" : "disabled"}>
                           <option value="">Select winner</option>
-                          <option value="teamA" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
-                          <option value="teamB" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
+                          <option value="teamA" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match) === "teamA" ? "selected" : ""}>${escapeHtml(match.teamA)}</option>
+                          <option value="teamB" ${normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match) === "teamB" ? "selected" : ""}>${escapeHtml(match.teamB)}</option>
                         </select>
                       </label>
                       <p class="deadline-note">Required only when the knockout match finishes level and goes to penalties.</p>
@@ -4552,11 +4652,12 @@ function calculateMatchPredictionBasePoints(prediction, match) {
     return scoring.exactScore;
   }
 
-  const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB, match.actualPenaltyWinner);
+  const actualOutcome = getOutcome(match.actualScoreA, match.actualScoreB, match.actualPenaltyWinner, match);
   const predictedOutcome = getOutcome(
     prediction.predictedScoreA,
     prediction.predictedScoreB,
-    prediction.predictedPenaltyWinner
+    prediction.predictedPenaltyWinner,
+    match
   );
 
   if (predictedOutcome === actualOutcome) {
@@ -4911,7 +5012,7 @@ function isExactScore(prediction, match) {
     return true;
   }
 
-  return normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner) === normalizeKnockoutWinnerChoice(match.actualPenaltyWinner);
+  return normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner, match) === normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match);
 }
 
 function exportLeaderboard() {
@@ -5219,7 +5320,7 @@ function normalizeMatch(match, index, groupLookup) {
   const actualScoreA = parseNullableScore(match.actualScoreA);
   const actualScoreB = parseNullableScore(match.actualScoreB);
   const actualPenaltyWinner = requiresKnockoutWinner(match, actualScoreA, actualScoreB)
-    ? normalizeKnockoutWinnerChoice(match.actualPenaltyWinner) || null
+    ? normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match) || null
     : null;
   const wentToExtraTime = Boolean(match.wentToExtraTime) || Boolean(actualPenaltyWinner);
   const matchDate = String(match.matchDate);
@@ -5310,9 +5411,9 @@ function parseNullableScore(value) {
   return parsed;
 }
 
-function getOutcome(scoreA, scoreB, penaltyWinner = "") {
+function getOutcome(scoreA, scoreB, penaltyWinner = "", match = null) {
   if (scoreA === scoreB) {
-    const resolvedWinner = normalizeKnockoutWinnerChoice(penaltyWinner);
+    const resolvedWinner = normalizeKnockoutWinnerChoice(penaltyWinner, match);
     if (resolvedWinner === "teamA") {
       return "home";
     }
@@ -5324,13 +5425,28 @@ function getOutcome(scoreA, scoreB, penaltyWinner = "") {
   return scoreA > scoreB ? "home" : "away";
 }
 
-function normalizeTeamSideChoice(value) {
+function normalizeTeamSideChoice(value, match = null) {
   const normalizedValue = String(value || "").trim();
-  return normalizedValue === "teamA" || normalizedValue === "teamB" ? normalizedValue : "";
+  if (normalizedValue === "teamA" || normalizedValue === "teamB") {
+    return normalizedValue;
+  }
+  if (normalizedValue === "home") {
+    return "teamA";
+  }
+  if (normalizedValue === "away") {
+    return "teamB";
+  }
+  if (match && normalizeName(normalizedValue) === normalizeName(match.teamA)) {
+    return "teamA";
+  }
+  if (match && normalizeName(normalizedValue) === normalizeName(match.teamB)) {
+    return "teamB";
+  }
+  return "";
 }
 
-function normalizeKnockoutWinnerChoice(value) {
-  return normalizeTeamSideChoice(value);
+function normalizeKnockoutWinnerChoice(value, match = null) {
+  return normalizeTeamSideChoice(value, match);
 }
 
 function normalizeSpecialFeatureTarget(value) {
@@ -5350,7 +5466,7 @@ function requiresKnockoutWinner(match, scoreA, scoreB) {
 }
 
 function getKnockoutWinnerLabel(winnerChoice, match) {
-  const normalizedWinner = normalizeKnockoutWinnerChoice(winnerChoice);
+  const normalizedWinner = normalizeKnockoutWinnerChoice(winnerChoice, match);
   if (normalizedWinner === "teamA") {
     return String(match?.teamA || "Team A");
   }
@@ -5366,7 +5482,7 @@ function didMatchGoToExtraTime(match) {
     && isKnockoutMatch(match)
     && (
       Boolean(match.wentToExtraTime)
-      || Boolean(normalizeKnockoutWinnerChoice(match.actualPenaltyWinner))
+      || Boolean(normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match))
     )
   );
 }
