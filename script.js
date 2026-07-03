@@ -1,8 +1,8 @@
 const STORAGE_KEY = "wc2026_predictor_2026_v2";
 const SESSION_STORAGE_KEY = "wc2026_predictor_session_v1";
 const SHARED_STATE_ENDPOINTS = ["api/shared-state", "storage.php"];
+const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
-const ADMIN_PASSWORD = "ziko97";
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -256,6 +256,7 @@ async function init() {
   renderSyncBanner();
   bindEvents();
   await hydrateState();
+  await refreshAdminSessionStatus({ silent: true });
   recalculatePoints();
   populateMatchFilters();
   renderAll();
@@ -304,6 +305,8 @@ function loadSessionState() {
     return {
       activePlayerId: String(parsed?.activePlayerId || ""),
       adminUnlocked: Boolean(parsed?.adminUnlocked),
+      adminSessionToken: String(parsed?.adminSessionToken || ""),
+      adminSessionVersion: String(parsed?.adminSessionVersion || ""),
       notificationReadByPlayer: normalizeNotificationReadByPlayer(parsed?.notificationReadByPlayer),
       rankTrackingByPlayer: normalizeRankTrackingByPlayer(parsed?.rankTrackingByPlayer),
       chatLastSeenByPlayer: normalizeChatLastSeenByPlayer(parsed?.chatLastSeenByPlayer)
@@ -318,6 +321,8 @@ function createDefaultSessionState() {
   return {
     activePlayerId: "",
     adminUnlocked: false,
+    adminSessionToken: "",
+    adminSessionVersion: "",
     notificationReadByPlayer: {},
     rankTrackingByPlayer: {},
     chatLastSeenByPlayer: {}
@@ -484,6 +489,101 @@ function normalizeRankNumber(value) {
 
 function saveSessionState() {
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionState));
+}
+
+function clearAdminSession({ toastMessage = "", toastType = "error", rerender = false } = {}) {
+  const wasUnlocked = Boolean(sessionState.adminUnlocked);
+  sessionState.adminUnlocked = false;
+  sessionState.adminSessionToken = "";
+  sessionState.adminSessionVersion = "";
+  saveSessionState();
+
+  if (rerender) {
+    renderAdmin();
+  }
+
+  if (toastMessage && wasUnlocked) {
+    showToast(toastMessage, toastType);
+  }
+}
+
+function getAdminAuthEndpointCandidates() {
+  return ADMIN_AUTH_ENDPOINTS.slice();
+}
+
+async function requestAdminAuth(payload) {
+  let lastError = null;
+
+  for (const endpoint of getAdminAuthEndpointCandidates()) {
+    try {
+      const response = await fetch(new URL(endpoint, window.location.href).toString(), {
+        method: "POST",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+
+      let result = null;
+      try {
+        result = await response.json();
+      } catch (error) {
+        result = null;
+      }
+
+      if (!response.ok) {
+        if (result && typeof result === "object") {
+          return result;
+        }
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      if (result?.error === "unsupported_action" || result?.error === "not_found") {
+        lastError = new Error(result.message || "Admin auth action is not supported on this endpoint.");
+        continue;
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  return {
+    ok: false,
+    error: "admin_auth_unavailable",
+    message: lastError?.message || "Admin authentication is unavailable right now."
+  };
+}
+
+async function refreshAdminSessionStatus({ silent = true } = {}) {
+  if (!sessionState.adminUnlocked || !sessionState.adminSessionToken) {
+    return null;
+  }
+
+  const result = await requestAdminAuth({
+    action: "adminStatus",
+    token: sessionState.adminSessionToken
+  });
+
+  if (!result?.ok) {
+    if (!silent) {
+      showToast(result?.message || "Admin authentication is unavailable right now.", "error");
+    }
+    return result;
+  }
+
+  const currentVersion = String(result.adminSessionVersion || "");
+  const storedVersion = String(sessionState.adminSessionVersion || "");
+  if (!result.valid || !currentVersion || storedVersion !== currentVersion) {
+    clearAdminSession({
+      toastMessage: "Admin locked. Enter the password again after the latest app update.",
+      rerender: true
+    });
+  }
+
+  return result;
 }
 
 function normalizeStoredState(parsed, recoveryState = null) {
@@ -848,6 +948,14 @@ function reconcileSessionState() {
     sessionState.activePlayerId = "";
   }
 
+  sessionState.adminSessionToken = String(sessionState.adminSessionToken || "");
+  sessionState.adminSessionVersion = String(sessionState.adminSessionVersion || "");
+  if (!sessionState.adminUnlocked || !sessionState.adminSessionToken || !sessionState.adminSessionVersion) {
+    sessionState.adminUnlocked = false;
+    sessionState.adminSessionToken = "";
+    sessionState.adminSessionVersion = "";
+  }
+
   if (!sessionState.notificationReadByPlayer || typeof sessionState.notificationReadByPlayer !== "object") {
     sessionState.notificationReadByPlayer = {};
   }
@@ -1092,6 +1200,8 @@ function shouldDeferSharedRefresh() {
 }
 
 async function syncSharedState({ silent = true } = {}) {
+  await refreshAdminSessionStatus({ silent: true });
+
   if (shouldDeferSharedRefresh()) {
     return;
   }
@@ -1175,7 +1285,7 @@ async function handleSubmit(event) {
 
   if (form.matches(".admin-login-form")) {
     event.preventDefault();
-    handleAdminLogin(form);
+    await handleAdminLogin(form);
     return;
   }
 
@@ -1330,9 +1440,7 @@ async function handleClick(event) {
   }
 
   if (actionTarget.matches("[data-action='lock-admin']")) {
-    sessionState.adminUnlocked = false;
-    saveSessionState();
-    renderAdmin();
+    clearAdminSession({ rerender: true });
   }
 }
 
@@ -1829,15 +1937,28 @@ async function handleChatReaction(button) {
   renderAll();
 }
 
-function handleAdminLogin(form) {
+async function handleAdminLogin(form) {
   const password = String(new FormData(form).get("password") || "");
-  if (password !== ADMIN_PASSWORD) {
-    showToast("Wrong password", "error");
+  const result = await requestAdminAuth({
+    action: "authenticateAdmin",
+    password
+  });
+
+  if (!result?.ok || !result.adminSessionToken || !result.adminSessionVersion) {
+    showToast(
+      result?.error === "invalid_admin_password"
+        ? "Wrong password"
+        : (result?.message || "Admin login unavailable"),
+      "error"
+    );
     return;
   }
 
   sessionState.adminUnlocked = true;
+  sessionState.adminSessionToken = String(result.adminSessionToken || "");
+  sessionState.adminSessionVersion = String(result.adminSessionVersion || "");
   saveSessionState();
+  form.reset();
   renderAdmin();
   showToast("Admin login success", "success");
 }
@@ -4410,7 +4531,7 @@ function renderAdmin() {
           <input id="adminPasswordInput" name="password" type="password" placeholder="Enter admin password" required>
           <button class="primary-button" type="submit">Unlock Admin</button>
         </div>
-        <p class="admin-help">Use the current app password to manage results and recalculate standings.</p>
+        <p class="admin-help">Use the current admin password to manage results. After each new deployment, admin access locks again automatically.</p>
       </form>
     `;
     dom.adminWorkspace.classList.add("hidden");
