@@ -5,6 +5,9 @@ const ADMIN_AUTH_ENDPOINTS = ["api/shared-state", "storage.php"];
 const SHARED_SYNC_INTERVAL_MS = 5000;
 const ADMIN_SESSION_CHECK_INTERVAL_MS = 1000;
 const PLAYER_SESSION_VERSION = "2026-07-03-force-login-1";
+const ADMIN_PASSWORD_SHA256 = "556ea1b2f7420f2cd4e6d1d548f7389cdaf91535020c5917e16d2b3bf6b98844";
+const CLIENT_ADMIN_TOKEN_PREFIX = "client-admin:";
+const CLIENT_ADMIN_TOKEN_SALT = "wc2026-client-admin-v1";
 const CHAT_MAX_MESSAGE_LENGTH = 280;
 const CHAT_MAX_MESSAGES = 150;
 const CHAT_EMOJIS = ["😀", "😂", "😍", "😎", "🔥", "⚽", "🏆", "👏", "🤝", "🥳", "😭", "😅"];
@@ -534,6 +537,68 @@ function getAdminAuthEndpointCandidates() {
   return ADMIN_AUTH_ENDPOINTS.slice();
 }
 
+async function computeSha256Hex(value) {
+  if (!globalThis.crypto?.subtle || typeof TextEncoder === "undefined") {
+    throw new Error("Secure browser hashing is unavailable on this device.");
+  }
+
+  const buffer = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(String(value || ""))
+  );
+
+  return Array.from(new Uint8Array(buffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function getClientAdminSessionVersion() {
+  return `${PLAYER_SESSION_VERSION}-admin`;
+}
+
+async function buildClientAdminSessionToken(version = getClientAdminSessionVersion()) {
+  const digest = await computeSha256Hex(`${version}:${CLIENT_ADMIN_TOKEN_SALT}`);
+  return `${CLIENT_ADMIN_TOKEN_PREFIX}${digest}`;
+}
+
+async function requestClientAdminAuth(payload) {
+  const action = String(payload?.action || "");
+
+  if (action === "authenticateAdmin") {
+    const passwordHash = await computeSha256Hex(String(payload?.password || ""));
+    if (passwordHash !== ADMIN_PASSWORD_SHA256) {
+      return {
+        ok: false,
+        error: "invalid_admin_password",
+        message: "Wrong admin password."
+      };
+    }
+
+    const adminSessionVersion = getClientAdminSessionVersion();
+    return {
+      ok: true,
+      adminSessionToken: await buildClientAdminSessionToken(adminSessionVersion),
+      adminSessionVersion
+    };
+  }
+
+  if (action === "adminStatus") {
+    const token = String(payload?.token || "");
+    if (!token.startsWith(CLIENT_ADMIN_TOKEN_PREFIX)) {
+      return null;
+    }
+
+    const adminSessionVersion = getClientAdminSessionVersion();
+    return {
+      ok: true,
+      valid: token === await buildClientAdminSessionToken(adminSessionVersion),
+      adminSessionVersion
+    };
+  }
+
+  return null;
+}
+
 async function requestAdminAuth(payload) {
   let lastError = null;
 
@@ -556,10 +621,12 @@ async function requestAdminAuth(payload) {
       }
 
       if (!response.ok) {
-        if (result && typeof result === "object") {
+        if (result?.error === "invalid_admin_password") {
           return result;
         }
-        throw new Error(`HTTP ${response.status}`);
+
+        lastError = new Error(result?.message || `HTTP ${response.status}`);
+        continue;
       }
 
       if (result?.error === "unsupported_action" || result?.error === "not_found") {
@@ -571,6 +638,15 @@ async function requestAdminAuth(payload) {
     } catch (error) {
       lastError = error;
     }
+  }
+
+  try {
+    const fallbackResult = await requestClientAdminAuth(payload);
+    if (fallbackResult) {
+      return fallbackResult;
+    }
+  } catch (error) {
+    lastError = error;
   }
 
   return {
