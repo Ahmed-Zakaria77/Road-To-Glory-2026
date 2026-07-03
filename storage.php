@@ -143,6 +143,9 @@ function commitState(array $state, int $baseRevision): void
 
     $currentEnvelope = readEnvelopeFromHandle($handle);
     $currentRevision = (int) ($currentEnvelope['revision'] ?? 0);
+    $currentPlayerSessionVersion = isset($currentEnvelope['state']['playerSessionVersion'])
+        ? (string) $currentEnvelope['state']['playerSessionVersion']
+        : '';
 
     if ($currentEnvelope !== null && $baseRevision !== $currentRevision) {
         flock($handle, LOCK_UN);
@@ -155,6 +158,10 @@ function commitState(array $state, int $baseRevision): void
             'revision' => $currentRevision,
             'state' => $currentEnvelope['state']
         ], 409);
+    }
+
+    if ((string) ($state['playerSessionVersion'] ?? '') === '' && $currentPlayerSessionVersion !== '') {
+        $state['playerSessionVersion'] = $currentPlayerSessionVersion;
     }
 
     $nextEnvelope = [
