@@ -520,6 +520,7 @@ function normalizeStoredState(parsed, recoveryState = null) {
   syncGroupPredictionDeadlines(baseState.groups, baseState.matches);
   reconcilePredictions(baseState);
   recoverMissingKnockoutMetadata(baseState, recoveryState);
+  recoverMissingKnockoutPredictionWinners(baseState, recoveryState);
   recoverMissingSpecialFeatureSelections(baseState, recoveryState);
   return baseState;
 }
@@ -539,25 +540,153 @@ function recoverMissingKnockoutMetadata(nextState, recoveryState) {
       return;
     }
 
-    const sameResult = (
+    const sameScoreline = (
       match.actualScoreA === recoveryMatch.actualScoreA
       && match.actualScoreB === recoveryMatch.actualScoreB
-      && normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match)
-        === normalizeKnockoutWinnerChoice(recoveryMatch.actualPenaltyWinner, recoveryMatch)
-      && Boolean(match.isFinished) === Boolean(recoveryMatch.isFinished)
     );
+    const sameFinishedState = Boolean(match.isFinished) === Boolean(recoveryMatch.isFinished);
 
     const sameResultVersion = (
       (!match.resultUpdatedAt && !recoveryMatch.resultUpdatedAt)
       || String(match.resultUpdatedAt || "") === String(recoveryMatch.resultUpdatedAt || "")
     );
 
-    if (sameResult && sameResultVersion && !didMatchGoToExtraTime(match) && didMatchGoToExtraTime(recoveryMatch)) {
+    if (!sameScoreline || !sameFinishedState || !sameResultVersion) {
+      return;
+    }
+
+    const currentPenaltyWinner = normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match);
+    const recoveryPenaltyWinner = normalizeKnockoutWinnerChoice(recoveryMatch.actualPenaltyWinner, recoveryMatch);
+    if (!currentPenaltyWinner && recoveryPenaltyWinner && requiresKnockoutWinner(match, match.actualScoreA, match.actualScoreB)) {
+      match.actualPenaltyWinner = recoveryPenaltyWinner;
+    }
+
+    if (!didMatchGoToExtraTime(match) && didMatchGoToExtraTime(recoveryMatch)) {
       match.wentToExtraTime = true;
       if (!match.resultUpdatedAt && recoveryMatch.resultUpdatedAt) {
         match.resultUpdatedAt = recoveryMatch.resultUpdatedAt;
       }
     }
+  });
+}
+
+function recoverMissingKnockoutPredictionWinners(nextState, recoveryState) {
+  if (!recoveryState || !Array.isArray(recoveryState.matchPredictions)) {
+    return;
+  }
+
+  const recoveryPredictionsByKey = new Map(
+    recoveryState.matchPredictions.map((prediction) => [
+      buildPredictionLookupKey(prediction?.playerId, prediction?.matchId),
+      prediction
+    ])
+  );
+  const recoveryMatchesById = new Map(
+    Array.isArray(recoveryState.matches)
+      ? recoveryState.matches.map((match) => [String(match?.id || ""), match])
+      : []
+  );
+  const nextMatchesById = new Map(
+    nextState.matches.map((match) => [String(match.id), match])
+  );
+
+  nextState.matchPredictions.forEach((prediction) => {
+    const match = nextMatchesById.get(String(prediction.matchId)) || null;
+    const recoveryPrediction = recoveryPredictionsByKey.get(
+      buildPredictionLookupKey(prediction.playerId, prediction.matchId)
+    ) || null;
+    const recoveryMatch = recoveryMatchesById.get(String(prediction.matchId)) || null;
+
+    if (!match || !recoveryPrediction || !recoveryMatch || !isKnockoutMatch(match)) {
+      return;
+    }
+
+    const samePrediction = (
+      prediction.submittedAt === recoveryPrediction.submittedAt
+      && prediction.predictedScoreA === recoveryPrediction.predictedScoreA
+      && prediction.predictedScoreB === recoveryPrediction.predictedScoreB
+    );
+    if (!samePrediction || !requiresKnockoutWinner(match, prediction.predictedScoreA, prediction.predictedScoreB)) {
+      return;
+    }
+
+    const currentPenaltyWinner = normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner, match);
+    const recoveryPenaltyWinner = normalizeKnockoutWinnerChoice(recoveryPrediction.predictedPenaltyWinner, recoveryMatch);
+    if (!currentPenaltyWinner && recoveryPenaltyWinner) {
+      prediction.predictedPenaltyWinner = recoveryPenaltyWinner;
+    }
+  });
+}
+
+async function repairRecoveredKnockoutState(sourceState, recoveredState) {
+  if (!sourceState || !recoveredState || !persistence.backendAvailable) {
+    return;
+  }
+
+  const normalizedSourceState = normalizeStoredState(sourceState);
+  if (!hasRecoveredKnockoutDifferences(normalizedSourceState, recoveredState)) {
+    return;
+  }
+
+  const saved = await commitSharedState(recoveredState, persistence.revision, { silent: true });
+  if (!saved?.ok) {
+    return;
+  }
+
+  persistence.revision = Number(saved.revision || persistence.revision);
+  state = normalizeStoredState(saved.state, recoveredState);
+  saveLocalSharedState(state);
+  reconcileSessionState();
+  recalculatePoints();
+  populateMatchFilters();
+  renderAll();
+}
+
+function hasRecoveredKnockoutDifferences(sourceState, recoveredState) {
+  const sourceMatchesById = new Map(
+    Array.isArray(sourceState?.matches)
+      ? sourceState.matches.map((match) => [String(match?.id || ""), match])
+      : []
+  );
+  const sourcePredictionsByKey = new Map(
+    Array.isArray(sourceState?.matchPredictions)
+      ? sourceState.matchPredictions.map((prediction) => [
+        buildPredictionLookupKey(prediction?.playerId, prediction?.matchId),
+        prediction
+      ])
+      : []
+  );
+
+  const matchNeedsRepair = recoveredState.matches.some((match) => {
+    const sourceMatch = sourceMatchesById.get(String(match.id));
+    if (!sourceMatch || !isKnockoutMatch(match)) {
+      return false;
+    }
+
+    const sourcePenaltyWinner = normalizeKnockoutWinnerChoice(sourceMatch.actualPenaltyWinner, sourceMatch);
+    const recoveredPenaltyWinner = normalizeKnockoutWinnerChoice(match.actualPenaltyWinner, match);
+    if (!sourcePenaltyWinner && recoveredPenaltyWinner) {
+      return true;
+    }
+
+    return !didMatchGoToExtraTime(sourceMatch) && didMatchGoToExtraTime(match);
+  });
+  if (matchNeedsRepair) {
+    return true;
+  }
+
+  return recoveredState.matchPredictions.some((prediction) => {
+    const sourcePrediction = sourcePredictionsByKey.get(
+      buildPredictionLookupKey(prediction.playerId, prediction.matchId)
+    ) || null;
+    const match = recoveredState.matches.find((item) => String(item.id) === String(prediction.matchId)) || null;
+    if (!sourcePrediction || !match || !isKnockoutMatch(match)) {
+      return false;
+    }
+
+    const sourcePenaltyWinner = normalizeKnockoutWinnerChoice(sourcePrediction.predictedPenaltyWinner, match);
+    const recoveredPenaltyWinner = normalizeKnockoutWinnerChoice(prediction.predictedPenaltyWinner, match);
+    return !sourcePenaltyWinner && recoveredPenaltyWinner;
   });
 }
 
@@ -774,6 +903,9 @@ async function hydrateState(options = {}) {
   saveLocalSharedState(state);
   reconcileSessionState();
   recalculatePoints();
+  if (response.state) {
+    void repairRecoveredKnockoutState(response.state, state);
+  }
 }
 
 async function fetchSharedState({ silent = false } = {}) {
@@ -974,6 +1106,9 @@ async function syncSharedState({ silent = true } = {}) {
   saveLocalSharedState(state);
   reconcileSessionState();
   recalculatePoints();
+  if (remote.state) {
+    void repairRecoveredKnockoutState(remote.state, state);
+  }
   populateMatchFilters();
   renderAll();
 }
