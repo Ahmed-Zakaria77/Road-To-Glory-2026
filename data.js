@@ -99,7 +99,7 @@ const worldCupData = (() => {
   const knockoutMatches = generateKnockoutMatches(groupStageMatches.length + 1);
 
   return {
-    version: "wc2026-groups-a-to-l-v3",
+    version: "wc2026-groups-a-to-l-v4",
     groups,
     matches: [...groupStageMatches, ...knockoutMatches]
   };
@@ -164,13 +164,29 @@ const worldCupData = (() => {
       { id: 88, date: "2026-07-04", day: "Saturday", time: "04:30", homeTeam: "Colombia", awayTeam: "Ghana", status: "scheduled" }
     ];
 
-    const rounds = [
+    const roundOf16Schedule = [
+      { id: 89, date: "2026-07-04", day: "Saturday", time: "20:00", homeTeam: "Morocco", awayTeam: "Canada", status: "scheduled" },
+      { id: 90, date: "2026-07-05", day: "Sunday", time: "00:00", homeTeam: "France", awayTeam: "Paraguay", status: "scheduled" },
+      { id: 91, date: "2026-07-05", day: "Sunday", time: "23:00", homeTeam: "Norway", awayTeam: "Brazil", status: "scheduled" },
+      { id: 92, date: "2026-07-06", day: "Monday", time: "03:00", homeTeam: "England", awayTeam: "Mexico", status: "scheduled" },
+      { id: 93, date: "2026-07-06", day: "Monday", time: "22:00", homeTeam: "Spain", awayTeam: "Portugal", status: "scheduled" },
+      { id: 94, date: "2026-07-07", day: "Tuesday", time: "03:00", homeTeam: "Belgium", awayTeam: "United States", status: "scheduled" },
       {
-        name: "Round of 16",
-        start: new Date(2026, 6, 4, 16, 0, 0),
-        times: [16, 20],
-        teams: Array.from({ length: 8 }, (_, index) => [`Winner Match ${startId + index * 2}`, `Winner Match ${startId + index * 2 + 1}`])
+        id: 95,
+        date: "2026-07-07",
+        day: "Tuesday",
+        time: "19:00",
+        homeTeam: "Egypt",
+        awayTeam: "Argentina",
+        status: "scheduled",
+        exactScorePointsOverride: 20,
+        featuredBadge: "20 pts exact",
+        featuredNote: "Exact score on this match is worth 20 points."
       },
+      { id: 96, date: "2026-07-07", day: "Tuesday", time: "23:00", homeTeam: "Switzerland", awayTeam: "Colombia", status: "scheduled" }
+    ];
+
+    const rounds = [
       {
         name: "Quarter Finals",
         start: new Date(2026, 6, 8, 18, 0, 0),
@@ -200,12 +216,12 @@ const worldCupData = (() => {
       }
     ];
 
-    const matches = roundOf32Schedule.map((match) => {
+    const createScheduledMatch = (match, roundName) => {
       const matchDate = createDateFromParts(match.date, match.time);
 
       return {
         id: match.id,
-        round: "Round of 32",
+        round: roundName,
         group: "",
         day: match.day,
         status: match.status,
@@ -215,12 +231,20 @@ const worldCupData = (() => {
         teamBLogo: getTeamLogo(match.awayTeam),
         matchDate: toIsoLocalString(matchDate),
         predictionDeadline: toIsoLocalString(addMinutes(matchDate, -15)),
+        exactScorePointsOverride: Number(match.exactScorePointsOverride) > 0 ? Number(match.exactScorePointsOverride) : null,
+        featuredBadge: match.featuredBadge || "",
+        featuredNote: match.featuredNote || "",
         actualScoreA: null,
         actualScoreB: null,
         isFinished: false
       };
-    });
-    let id = Math.max(startId + roundOf32Schedule.length, roundOf32Schedule[roundOf32Schedule.length - 1].id + 1);
+    };
+
+    const matches = [
+      ...roundOf32Schedule.map((match) => createScheduledMatch(match, "Round of 32")),
+      ...roundOf16Schedule.map((match) => createScheduledMatch(match, "Round of 16"))
+    ];
+    let id = Math.max(startId + roundOf32Schedule.length + roundOf16Schedule.length, roundOf16Schedule[roundOf16Schedule.length - 1].id + 1);
 
     rounds.forEach((round) => {
       round.teams.forEach((pair, index) => {

@@ -842,6 +842,28 @@ main {
   padding: 1.1rem;
 }
 
+.match-card-featured {
+  border-color: rgba(255, 210, 92, 0.45);
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.28),
+    0 0 0 1px rgba(255, 210, 92, 0.18),
+    0 0 28px rgba(255, 196, 67, 0.16);
+    border: goldenrod 3px solid;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 .stat-card {
   min-width: 0;
   min-height: 112px;
@@ -1112,6 +1134,41 @@ textarea {
 
 .countdown-badge {
   color: #d9ecff;
+}
+
+.match-promo-badge {
+  border-color: rgba(255, 210, 92, 0.4);
+  background: rgba(255, 210, 92, 0.14);
+  color: #ffe08a;
+}
+
+.match-promo-note {
+  margin: 0.85rem 0 0;
+  padding: 0.8rem 0.95rem;
+  border: 1px solid rgba(255, 210, 92, 0.22);
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(255, 210, 92, 0.12), rgba(255, 145, 77, 0.08));
+  color: #ffe3a6;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.match-card-featured .match-promo-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  text-align: center;
+  color: goldenrod;
+  font-weight: 800;
+}
+
+.match-card-featured .match-promo-note::before,
+.match-card-featured .match-promo-note::after {
+  content: "★";
+  color: goldenrod;
+  font-size: 1rem;
+  line-height: 1;
 }
 
 .rounds-stack {

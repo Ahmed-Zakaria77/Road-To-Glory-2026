@@ -2735,6 +2735,7 @@ function renderMatchCard(match, player) {
   const prediction = player ? getMatchPrediction(player.id, match.id) : null;
   const isLocked = !isOpen;
   const hasSpecialFeature = isSpecialFeatureMatch(match);
+  const featuredMatch = isFeaturedMatch(match);
   const buttonLabel = !isOpen
     ? "Prediction Closed"
     : prediction
@@ -2744,7 +2745,7 @@ function renderMatchCard(match, player) {
   const actualScore = formatMatchScoreline(match);
 
   return `
-    <article class="match-card">
+    <article class="match-card ${featuredMatch ? "match-card-featured" : ""}">
       <div class="card-topline">
         <div>
           <span class="card-kicker">${escapeHtml(match.round)}</span>
@@ -2752,6 +2753,7 @@ function renderMatchCard(match, player) {
         </div>
         <div class="chip-row">
           <span class="chip">${escapeHtml(getMatchGroupLabel(match))}</span>
+          ${match.featuredBadge ? `<span class="chip match-promo-badge">${escapeHtml(match.featuredBadge)}</span>` : ""}
           <span class="status-pill ${isOpen ? "status-open" : "status-closed"}">${isOpen ? "Open for prediction" : "Prediction closed"}</span>
         </div>
       </div>
@@ -2773,6 +2775,8 @@ function renderMatchCard(match, player) {
         <span class="countdown-badge" data-deadline="${escapeHtml(match.predictionDeadline)}" data-open="${String(isOpen)}">${escapeHtml(formatCountdown(match.predictionDeadline))}</span>
         <span class="chip">Actual: ${escapeHtml(actualScore)}</span>
       </div>
+
+      ${match.featuredNote ? `<p class="match-promo-note">${escapeHtml(match.featuredNote)}</p>` : ""}
 
       <form
         class="match-form"
@@ -4821,7 +4825,25 @@ function calculateMatchPredictionBasePoints(prediction, match) {
 }
 
 function getMatchScoring(match) {
-  return isKnockoutMatch(match) ? KNOCKOUT_MATCH_SCORING : MATCH_SCORING;
+  const baseScoring = isKnockoutMatch(match) ? KNOCKOUT_MATCH_SCORING : MATCH_SCORING;
+  const exactScorePointsOverride = Number(match?.exactScorePointsOverride);
+
+  if (Number.isFinite(exactScorePointsOverride) && exactScorePointsOverride > 0) {
+    return {
+      ...baseScoring,
+      exactScore: exactScorePointsOverride
+    };
+  }
+
+  return baseScoring;
+}
+
+function isFeaturedMatch(match) {
+  if (!match || typeof match !== "object") {
+    return false;
+  }
+
+  return Boolean(match.featuredBadge || match.featuredNote || Number(match.exactScorePointsOverride) > 0);
 }
 
 function didTeamKeepCleanSheet(match, targetTeam) {
@@ -5505,6 +5527,7 @@ function normalizeMatch(match, index, groupLookup) {
   const predictionDeadline = match.predictionDeadline
     ? String(match.predictionDeadline)
     : calculateDeadlineFromMatchDate(matchDate);
+  const exactScorePointsOverride = Number(match.exactScorePointsOverride);
 
   return {
     id: String(match.id || `imported-${index + 1}`),
@@ -5516,6 +5539,11 @@ function normalizeMatch(match, index, groupLookup) {
     teamBLogo: resolveTeamLogo(match.teamBLogo, teamBInfo?.logo || ""),
     matchDate,
     predictionDeadline,
+    exactScorePointsOverride: Number.isFinite(exactScorePointsOverride) && exactScorePointsOverride > 0
+      ? exactScorePointsOverride
+      : null,
+    featuredBadge: match.featuredBadge ? String(match.featuredBadge) : "",
+    featuredNote: match.featuredNote ? String(match.featuredNote) : "",
     actualScoreA,
     actualScoreB,
     actualPenaltyWinner,
