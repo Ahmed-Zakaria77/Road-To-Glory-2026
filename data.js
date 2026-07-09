@@ -99,7 +99,7 @@ const worldCupData = (() => {
   const knockoutMatches = generateKnockoutMatches(groupStageMatches.length + 1);
 
   return {
-    version: "wc2026-groups-a-to-l-v4",
+    version: "wc2026-groups-a-to-l-v5",
     groups,
     matches: [...groupStageMatches, ...knockoutMatches]
   };
@@ -186,13 +186,14 @@ const worldCupData = (() => {
       { id: 96, date: "2026-07-07", day: "Tuesday", time: "23:00", homeTeam: "Switzerland", awayTeam: "Colombia", status: "scheduled" }
     ];
 
+    const quarterFinalsSchedule = [
+      { id: 97, date: "2026-07-09", day: "Thursday", time: "23:00", homeTeam: "Morocco", awayTeam: "France", status: "scheduled" },
+      { id: 98, date: "2026-07-10", day: "Friday", time: "22:00", homeTeam: "Spain", awayTeam: "Belgium", status: "scheduled" },
+      { id: 99, date: "2026-07-12", day: "Sunday", time: "00:00", homeTeam: "Norway", awayTeam: "England", status: "scheduled" },
+      { id: 100, date: "2026-07-12", day: "Sunday", time: "04:00", homeTeam: "Argentina", awayTeam: "Switzerland", status: "scheduled" }
+    ];
+
     const rounds = [
-      {
-        name: "Quarter Finals",
-        start: new Date(2026, 6, 8, 18, 0, 0),
-        times: [18, 22],
-        teams: Array.from({ length: 4 }, (_, index) => [`Winner Round of 16 Match ${index * 2 + 1}`, `Winner Round of 16 Match ${index * 2 + 2}`])
-      },
       {
         name: "Semi Finals",
         start: new Date(2026, 6, 12, 21, 0, 0),
@@ -242,9 +243,13 @@ const worldCupData = (() => {
 
     const matches = [
       ...roundOf32Schedule.map((match) => createScheduledMatch(match, "Round of 32")),
-      ...roundOf16Schedule.map((match) => createScheduledMatch(match, "Round of 16"))
+      ...roundOf16Schedule.map((match) => createScheduledMatch(match, "Round of 16")),
+      ...quarterFinalsSchedule.map((match) => createScheduledMatch(match, "Quarter Finals"))
     ];
-    let id = Math.max(startId + roundOf32Schedule.length + roundOf16Schedule.length, roundOf16Schedule[roundOf16Schedule.length - 1].id + 1);
+    let id = Math.max(
+      startId + roundOf32Schedule.length + roundOf16Schedule.length + quarterFinalsSchedule.length,
+      quarterFinalsSchedule[quarterFinalsSchedule.length - 1].id + 1
+    );
 
     rounds.forEach((round) => {
       round.teams.forEach((pair, index) => {
