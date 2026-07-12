@@ -99,7 +99,7 @@ const worldCupData = (() => {
   const knockoutMatches = generateKnockoutMatches(groupStageMatches.length + 1);
 
   return {
-    version: "wc2026-groups-a-to-l-v5",
+    version: "wc2026-groups-a-to-l-v6",
     groups,
     matches: [...groupStageMatches, ...knockoutMatches]
   };
@@ -193,16 +193,12 @@ const worldCupData = (() => {
       { id: 100, date: "2026-07-12", day: "Sunday", time: "04:00", homeTeam: "Argentina", awayTeam: "Switzerland", status: "scheduled" }
     ];
 
+    const semiFinalsSchedule = [
+      { id: 101, date: "2026-07-14", day: "Tuesday", time: "22:00", homeTeam: "France", awayTeam: "Spain", status: "scheduled" },
+      { id: 102, date: "2026-07-15", day: "Wednesday", time: "22:00", homeTeam: "England", awayTeam: "Argentina", status: "scheduled" }
+    ];
+
     const rounds = [
-      {
-        name: "Semi Finals",
-        start: new Date(2026, 6, 12, 21, 0, 0),
-        times: [21],
-        teams: [
-          ["Winner Quarter Final 1", "Winner Quarter Final 2"],
-          ["Winner Quarter Final 3", "Winner Quarter Final 4"]
-        ]
-      },
       {
         name: "Third Place Match",
         start: new Date(2026, 6, 18, 20, 0, 0),
@@ -244,11 +240,12 @@ const worldCupData = (() => {
     const matches = [
       ...roundOf32Schedule.map((match) => createScheduledMatch(match, "Round of 32")),
       ...roundOf16Schedule.map((match) => createScheduledMatch(match, "Round of 16")),
-      ...quarterFinalsSchedule.map((match) => createScheduledMatch(match, "Quarter Finals"))
+      ...quarterFinalsSchedule.map((match) => createScheduledMatch(match, "Quarter Finals")),
+      ...semiFinalsSchedule.map((match) => createScheduledMatch(match, "Semi Finals"))
     ];
     let id = Math.max(
-      startId + roundOf32Schedule.length + roundOf16Schedule.length + quarterFinalsSchedule.length,
-      quarterFinalsSchedule[quarterFinalsSchedule.length - 1].id + 1
+      startId + roundOf32Schedule.length + roundOf16Schedule.length + quarterFinalsSchedule.length + semiFinalsSchedule.length,
+      semiFinalsSchedule[semiFinalsSchedule.length - 1].id + 1
     );
 
     rounds.forEach((round) => {

@@ -152,7 +152,7 @@ const ROUND_THEME_MAP = {
   "Round of 32": "knockout-finals",
   "Round of 16": "knockout-finals",
   "Quarter Finals": "knockout-finals",
-  "Semi Finals": "knockout-finals",
+  "Semi Finals": "semi-finals",
   "Third Place Match": "knockout-finals",
   "Final": "knockout-finals"
 };
