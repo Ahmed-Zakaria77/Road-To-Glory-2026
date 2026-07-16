@@ -153,8 +153,8 @@ const ROUND_THEME_MAP = {
   "Round of 16": "knockout-finals",
   "Quarter Finals": "knockout-finals",
   "Semi Finals": "semi-finals",
-  "Third Place Match": "knockout-finals",
-  "Final": "knockout-finals"
+  "Third Place Match": "finals",
+  "Final": "finals"
 };
 
 const scheduleSource = normalizeWorldCupData(
@@ -1345,6 +1345,47 @@ async function handleClick(event) {
     return;
   }
 
+  if (actionTarget.matches("[data-action='grant-player-bonus']")) {
+    const select = document.getElementById("adminPlayerBonus");
+    const playerId = String(select?.value || "");
+    if (!playerId) {
+      showToast("Select a player to reward", "error");
+      return;
+    }
+
+    const player = state.players.find((item) => item.id === playerId);
+    if (!player) {
+      showToast("Player not found", "error");
+      return;
+    }
+
+    const result = await applySharedMutation((draftState) => {
+      const draftPlayer = draftState.players.find((item) => item.id === playerId);
+      if (!draftPlayer) {
+        throw new Error("Player not found");
+      }
+
+      draftPlayer.adminBonusPoints = Number(draftPlayer.adminBonusPoints || 0) + 10;
+      draftPlayer.adminBonusAwards = normalizeAdminBonusAwards(draftPlayer.adminBonusAwards);
+      draftPlayer.adminBonusAwards.push({
+        id: createId("bonus"),
+        points: 10,
+        createdAt: new Date().toISOString()
+      });
+
+      return {
+        playerName: draftPlayer.name
+      };
+    });
+    if (!result.ok) {
+      return;
+    }
+
+    renderAll();
+    showToast(`+10 bonus awarded to ${result.result.playerName}`, "success");
+    return;
+  }
+
   if (actionTarget.matches("[data-action='lock-admin']")) {
     sessionState.adminUnlocked = false;
     saveSessionState();
@@ -1509,6 +1550,8 @@ async function handleLogin(form) {
         matchPoints: 0,
         specialPoints: 0,
         groupPoints: 0,
+        adminBonusPoints: 0,
+        adminBonusAwards: [],
         exactScores: 0,
         createdAt: new Date().toISOString(),
         lastPredictionTime: null
@@ -4065,8 +4108,9 @@ function getPlayerNotificationEntries(playerId, sourceState = state) {
   const activeFeatureEntries = getActiveSpecialFeatureNotificationEntries(playerId, sourceState);
   const rankChangeEntry = getRankChangeNotificationEntry(playerId, sourceState);
   const specialFeatureEntries = getSpecialFeatureNotificationEntries(playerId, sourceState);
+  const adminBonusEntries = getAdminBonusNotificationEntries(playerId, sourceState);
 
-  return [rankChangeEntry, ...activeFeatureEntries, ...specialFeatureEntries, ...reminderEntries]
+  return [rankChangeEntry, ...adminBonusEntries, ...activeFeatureEntries, ...specialFeatureEntries, ...reminderEntries]
     .filter(Boolean)
     .sort((a, b) => {
       const aPriority = Number(a.sortPriority || 0);
@@ -4081,6 +4125,32 @@ function getPlayerNotificationEntries(playerId, sourceState = state) {
 
       return new Date(b.resolvedAt) - new Date(a.resolvedAt);
     });
+}
+
+function getAdminBonusNotificationEntries(playerId, sourceState = state) {
+  const derived = getDerivedState(sourceState);
+  const player = derived.playerById.get(String(playerId)) || null;
+  if (!player) {
+    return [];
+  }
+
+  return normalizeAdminBonusAwards(player.adminBonusAwards)
+    .slice()
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map((award) => ({
+      id: ["admin-bonus", String(player.id), String(award.id)].join(":"),
+      resolvedAt: award.createdAt,
+      title: "10 bonus points awarded",
+      context: `${player.name} • Admin reward`,
+      summary: "You received +10 bonus points as a reward for your correct predictions.",
+      actual: `Bonus added: +${award.points} pts`,
+      status: {
+        label: `Bonus +${award.points}`,
+        className: "status-feature"
+      },
+      timeLabel: "Awarded",
+      sortPriority: 6
+    }));
 }
 
 function getTodayPredictionReminderEntries(playerId, sourceState = state) {
@@ -4490,6 +4560,18 @@ function renderAdmin() {
               </select>
             </label>
             <button class="ghost-button" type="button" data-action="delete-player">Delete Player</button>
+            <label class="field-group" for="adminPlayerBonus">
+              <span>Reward player</span>
+              <select id="adminPlayerBonus">
+                <option value="">Select player</option>
+                ${state.players
+                  .slice()
+                  .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name)))
+                  .map((player) => `<option value="${escapeHtml(player.id)}">${escapeHtml(player.name)} (+${Number(player.adminBonusPoints || 0)} bonus)</option>`)
+                  .join("")}
+              </select>
+            </label>
+            <button class="secondary-button" type="button" data-action="grant-player-bonus">Give +10 Bonus</button>
           </div>
         </div>
         <div class="admin-actions panel">
@@ -4702,6 +4784,8 @@ function recalculatePoints(sourceState = state) {
     player.specialPoints = 0;
     player.groupPoints = 0;
     player.exactScores = 0;
+    player.specialPoints += Number(player.adminBonusPoints || 0);
+    player.totalPoints += Number(player.adminBonusPoints || 0);
     player.lastPredictionTime = null;
     playerMap.set(player.id, player);
   });
@@ -5860,10 +5944,38 @@ function normalizePlayer(player) {
     matchPoints: Number(player?.matchPoints || 0),
     specialPoints: Number(player?.specialPoints || 0),
     groupPoints: Number(player?.groupPoints || 0),
+    adminBonusPoints: Number(player?.adminBonusPoints || 0),
+    adminBonusAwards: normalizeAdminBonusAwards(player?.adminBonusAwards),
     exactScores: Number(player?.exactScores || 0),
     createdAt: player?.createdAt || new Date().toISOString(),
     lastPredictionTime: player?.lastPredictionTime || null
   };
+}
+
+function normalizeAdminBonusAwards(awards) {
+  if (!Array.isArray(awards)) {
+    return [];
+  }
+
+  return awards
+    .map((award) => {
+      if (!award || typeof award !== "object") {
+        return null;
+      }
+
+      const points = Number(award.points || 0);
+      const createdAt = normalizeTimestamp(award.createdAt);
+      if (!createdAt || !Number.isFinite(points) || points === 0) {
+        return null;
+      }
+
+      return {
+        id: String(award.id || createId("bonus")),
+        points,
+        createdAt
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeChatMessages(messages) {
